@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="accessibility_service_description">Rapido Driver App-ல் ride request வரும்போது, user-ஆல் set பண்ணிய drop location match ஆனால் Accept button-ஐ automatically click பண்ணும்.</string>
+</resources>
