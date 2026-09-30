@@ -80,6 +80,7 @@ class RapidoAutoClickService : AccessibilityService() {
 
         var instance: RapidoAutoClickService? = null
         var onRideAccepted: ((String, String) -> Unit)? = null
+        var onRideSkipped: ((String, String) -> Unit)? = null
         var onRideDetected: ((String, String) -> Unit)? = null
     }
 
@@ -281,7 +282,21 @@ class RapidoAutoClickService : AccessibilityService() {
 
         // Only show Scanning if NO window had a visible ride card
         if (!rideCardFoundInAnyWindow) {
-            updateHUD("🟢 Scanning", "#8800C853", true)
+            updateHUD("?? Scanning", "#8800C853", true)
+
+            val isOlaBlockerEnabled = prefs.getBoolean("ola_blocker_enabled", true)
+            if (pkg == "com.olacabs.oladriver" && isOlaBlockerEnabled) {
+                val left = prefs.getInt("ola_accept_left", -1)
+                val top = prefs.getInt("ola_accept_top", -1)
+                if (left != -1) {
+                    val bounds = android.graphics.Rect(left, top, prefs.getInt("ola_accept_right", -1), prefs.getInt("ola_accept_bottom", -1))
+                    updateBlocker(bounds, true)
+                } else {
+                    updateBlocker(null, false)
+                }
+            } else {
+                updateBlocker(null, false)
+            }
         }
     }
 
@@ -339,7 +354,7 @@ class RapidoAutoClickService : AccessibilityService() {
 
         val currencyRegex = Regex("(?:₹|rs\\.?)\\s*([0-9]+\\.?[0-9]*)|([0-9]+\\.?[0-9]*)\\s*(?:₹|rs\\.?)", RegexOption.IGNORE_CASE)
         // Matches explicitly "+ 20 tip", "Tip: ₹20", "+ ₹20", "includes 20 tip", etc.
-        val tipRegex = Regex("(?:\\+|tip|bonus|extra)\\s*(?:₹|rs\\.?)*\\s*([0-9]+\\.?[0-9]*)|([0-9]+\\.?[0-9]*)\\s*(?:tip|bonus|extra)", RegexOption.IGNORE_CASE)
+        val tipRegex = Regex("(?:\\+|tip|bonus|extra)[^0-9]*?([0-9]+\\.?[0-9]*)|([0-9]+\\.?[0-9]*)[^0-9]*?(?:tip|bonus|extra)", RegexOption.IGNORE_CASE)
 
         for (text in texts) {
             val tipMatch = tipRegex.find(text)
@@ -459,7 +474,23 @@ class RapidoAutoClickService : AccessibilityService() {
         val tpStr = if (tipAmt >= 0) ", Tip: ₹$tipAmt" else ""
         val distStr = " (P: ${pStr}km, D: ${dStr}km, $prStr$tpStr)"
 
+        // Ensure we get the bounds for blocker
+        val bounds = android.graphics.Rect()
+        acceptButton.getBoundsInScreen(bounds)
+
+        if (appConfig.packageName == "com.olacabs.oladriver") {
+            prefs.edit()
+                .putInt("ola_accept_left", bounds.left)
+                .putInt("ola_accept_top", bounds.top)
+                .putInt("ola_accept_right", bounds.right)
+                .putInt("ola_accept_bottom", bounds.bottom)
+                .apply()
+        }
+
         if (!isMatch) {
+            if (appConfig.packageName == "com.olacabs.oladriver") {
+                updateBlocker(bounds, true)
+            }
             if (dropText.isNotEmpty()) {
                 updateHUD("❌ Skip: $dropText", "#88D32F2F", true)
                 saveRideHistory(appConfig.displayName, dropText + distStr, "SKIPPED", pickupKm, dropKm, baseFare, tipAmt, pickupText, dropText)
@@ -472,19 +503,32 @@ class RapidoAutoClickService : AccessibilityService() {
         Log.d(TAG, "[${appConfig.displayName}] Target Match Found! Drop: '$dropText'")
         updateHUD("🎯 Match: $matchedLocation", "#88FF9800", true)
 
+        if (appConfig.packageName == "com.olacabs.oladriver") {
+            updateBlocker(null, false)
+            val btnText = acceptButton.text?.toString()?.lowercase() ?: acceptButton.contentDescription?.toString()?.lowercase() ?: ""
+            if (btnText.contains("accept in")) {
+                Log.d(TAG, "[OLA] Waiting for countdown... Button text: $btnText")
+                updateHUD("⏳ Waiting...", "#FF9800", true)
+                return true
+            }
+        }
+
         // Step 6: ✅ MATCH — Click!
         Log.d(TAG, "[${appConfig.displayName}] ✅ MATCH! Clicking...")
         updateHUD("✅ ACCEPTED!", "#FF00C853", true)
 
-        val bounds = android.graphics.Rect()
-        acceptButton.getBoundsInScreen(bounds)
         showClickEffect(bounds)
 
         val clicked = if (forceGesture) {
             performGestureClick(bounds)
             true
         } else {
-            acceptButton.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            if (appConfig.packageName == "com.olacabs.oladriver") {
+                Log.d(TAG, "[OLA] User will physically tap. No auto-click generated.")
+                true
+            } else {
+                acceptButton.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            }
         }
 
         if (clicked) {
@@ -527,6 +571,18 @@ class RapidoAutoClickService : AccessibilityService() {
         lastSavedRides[key] = now
 
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        
+        if (status == "SKIPPED") {
+            val ts = prefs.getInt("totalSkipped", 0) + 1
+            prefs.edit().putInt("totalSkipped", ts).apply()
+            onRideSkipped?.invoke(appName, location)
+        } else if (status == "ACCEPTED") {
+            var te = prefs.getFloat("totalEarnings", 0.0f)
+            if (fare > 0) te += fare
+            if (tip > 0) te += tip
+            prefs.edit().putFloat("totalEarnings", te).apply()
+        }
+
         val historyStr = prefs.getString("ride_history", "[]") ?: "[]"
         try {
             val array = org.json.JSONArray(historyStr)
@@ -636,7 +692,7 @@ class RapidoAutoClickService : AccessibilityService() {
         // Skip non-address texts based on patterns
         val skipKeywords = listOf(
             "accept", "match", "auto", "cash", "payment", "pickup", "drop",
-            "trip radar", "on duty", "earnings", "orders", "hours", "rating",
+            "trip radar", "on duty", "earnings", "orders", "hours","add on","Add on", "rating",
             "home", "dashboard", "booked", "compact", "traffic", "fare",
             "1 ride", "1 order", "old to new", "km away", "distance",
             // Rapido UI elements
@@ -747,6 +803,79 @@ class RapidoAutoClickService : AccessibilityService() {
             val gestureBuilder = android.accessibilityservice.GestureDescription.Builder()
             gestureBuilder.addStroke(android.accessibilityservice.GestureDescription.StrokeDescription(path, 0, 50))
             dispatchGesture(gestureBuilder.build(), null, null)
+        }
+    }
+
+    private fun performGestureSwipe(bounds: android.graphics.Rect) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            val path = android.graphics.Path()
+            val startX = bounds.left.toFloat() + (bounds.width() * 0.1f)
+            val centerY = bounds.exactCenterY()
+            val endX = bounds.right.toFloat() - (bounds.width() * 0.1f)
+            
+            path.moveTo(startX, centerY)
+            path.lineTo(endX, centerY)
+            
+            val gestureBuilder = android.accessibilityservice.GestureDescription.Builder()
+            gestureBuilder.addStroke(android.accessibilityservice.GestureDescription.StrokeDescription(path, 0, 400))
+            dispatchGesture(gestureBuilder.build(), null, null)
+        }
+    }
+
+    private var blockerOverlay: android.view.View? = null
+
+    private fun updateBlocker(bounds: android.graphics.Rect?, show: Boolean) {
+        val wm = getSystemService(Context.WINDOW_SERVICE) as? android.view.WindowManager ?: return
+        
+        if (!show || bounds == null) {
+            blockerOverlay?.let { 
+                try { wm.removeView(it) } catch (e: Exception) {}
+                blockerOverlay = null
+            }
+            return
+        }
+
+        // Add some padding to ensure it covers even if there's a small offset
+        val pad = 60
+        val targetX = bounds.left - pad
+        val targetY = bounds.top - pad
+        val targetW = bounds.width() + (pad * 2)
+        val targetH = bounds.height() + (pad * 2)
+
+        if (blockerOverlay != null) {
+            val params = blockerOverlay?.layoutParams as? android.view.WindowManager.LayoutParams
+            if (params != null && (params.x != targetX || params.y != targetY || params.height != targetH)) {
+                params.x = targetX
+                params.y = targetY
+                params.width = targetW
+                params.height = targetH
+                try { wm.updateViewLayout(blockerOverlay, params) } catch (e: Exception) {}
+            }
+            return
+        }
+
+        val params = android.view.WindowManager.LayoutParams(
+            targetW,
+            targetH,
+            android.view.WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+            android.view.WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+            android.view.WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            android.graphics.PixelFormat.TRANSLUCENT
+        )
+        params.gravity = android.view.Gravity.TOP or android.view.Gravity.START
+        params.x = targetX
+        params.y = targetY
+
+        val view = android.widget.FrameLayout(this)
+        view.setBackgroundColor(android.graphics.Color.parseColor("#44FF0000")) 
+        view.setOnTouchListener { _, _ -> true }
+
+        try {
+            wm.addView(view, params)
+            blockerOverlay = view
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
     }
 
@@ -963,3 +1092,5 @@ class RapidoAutoClickService : AccessibilityService() {
             .notify(NOTIFICATION_ID, buildNotification(text))
     }
 }
+
+

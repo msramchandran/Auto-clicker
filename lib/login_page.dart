@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
+import 'dart:math';
 import 'package:http/http.dart' as http;
 import 'main.dart'; // To navigate to HomePage
 
@@ -15,6 +16,12 @@ class _LoginPageState extends State<LoginPage> {
   final TextEditingController _idController = TextEditingController();
   bool _isLoading = false;
 
+  String _generateDeviceId() {
+    const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+    final rnd = Random();
+    return String.fromCharCodes(Iterable.generate(16, (_) => chars.codeUnitAt(rnd.nextInt(chars.length))));
+  }
+
   Future<void> _login() async {
     final driverId = _idController.text.trim();
     if (driverId.isEmpty) {
@@ -27,17 +34,26 @@ class _LoginPageState extends State<LoginPage> {
     setState(() => _isLoading = true);
 
     try {
+      final prefs = await SharedPreferences.getInstance();
+      String deviceId = prefs.getString('deviceId') ?? '';
+      if (deviceId.isEmpty) {
+        deviceId = _generateDeviceId();
+        await prefs.setString('deviceId', deviceId);
+      }
+
       final response = await http.post(
         Uri.parse('http://43.205.135.3:3000/api/clicker-login'),
         headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'driver_id': driverId}),
+        body: jsonEncode({
+          'driver_id': driverId,
+          'device_id': deviceId
+        }),
       );
 
       final data = jsonDecode(response.body);
 
       if (data['status'] == 'success') {
         // Save login state
-        final prefs = await SharedPreferences.getInstance();
         await prefs.setBool('isLoggedIn', true);
         await prefs.setString('driverId', driverId);
 
@@ -57,9 +73,11 @@ class _LoginPageState extends State<LoginPage> {
         }
       }
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Network error: $e')),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Network error: $e')),
+        );
+      }
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
@@ -178,3 +196,4 @@ class _LoginPageState extends State<LoginPage> {
     );
   }
 }
+

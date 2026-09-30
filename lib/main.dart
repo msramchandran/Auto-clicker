@@ -1,6 +1,11 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'dart:convert';
+import 'package:http/http.dart' as http;
+import 'package:image_picker/image_picker.dart';
+
+import 'package:flutter/services.dart';
 import 'login_page.dart';
 
 void main() async {
@@ -138,6 +143,8 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   bool _serviceActive = false;
   bool _isHUDEnabled = true;
+  bool _olaBlockerEnabled = true;
+  bool _isAppPurchased = false;
   int _totalAccepted = 0;
   String _lastActivity = 'Waiting for ride requests...';
 

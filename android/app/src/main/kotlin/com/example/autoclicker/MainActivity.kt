@@ -15,6 +15,36 @@ class MainActivity : FlutterActivity() {
         private const val PREFS_NAME = "AutoClickerPrefs"
     }
 
+    private var upiResult: io.flutter.plugin.common.MethodChannel.Result? = null
+
+    private val UPI_REQUEST_CODE = 123
+
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: android.content.Intent?) {
+
+        super.onActivityResult(requestCode, resultCode, data)
+
+        if (requestCode == UPI_REQUEST_CODE) {
+
+            if (data != null) {
+
+                val response = data.getStringExtra("response") ?: ""
+
+                upiResult?.success(response)
+
+            } else {
+
+                upiResult?.success("FAILURE")
+
+            }
+
+            upiResult = null
+
+        }
+
+    }
+
+
     private val prefs by lazy { getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE) }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -27,6 +57,20 @@ class MainActivity : FlutterActivity() {
                     // ── Service status ──────────────────────────────────
                     "isServiceEnabled" ->
                         result.success(isAccessibilityServiceEnabled())
+
+                    "launchUPI" -> {
+                        val uriStr = call.argument<String>("url") ?: ""
+                        val intent = Intent(Intent.ACTION_VIEW)
+                        intent.data = android.net.Uri.parse(uriStr)
+                        val chooser = Intent.createChooser(intent, "Pay with")
+                        upiResult = result
+                        try {
+                            startActivityForResult(chooser, UPI_REQUEST_CODE)
+                        } catch (e: Exception) {
+                            result.error("NO_UPI_APP", "No UPI app found", null)
+                            upiResult = null
+                        }
+                    }
 
                     "openAccessibilitySettings" -> {
                         startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
@@ -119,6 +163,34 @@ class MainActivity : FlutterActivity() {
                         result.success(null)
                     }
 
+                    "syncAcceptedTrips" -> {
+
+                        val accepted = call.argument<Int>("accepted") ?: 0
+
+                        prefs.edit().putInt("totalAccepted", accepted).apply()
+
+                        result.success(null)
+
+                    }
+
+
+                    "setAppPurchased" -> {
+
+                        val purchased = call.argument<Boolean>("purchased") ?: true
+
+                        prefs.edit().putBoolean("isAppPurchased", purchased).apply()
+
+                        result.success(null)
+
+                    }
+
+
+                    "setOlaBlocker" -> {
+                        val enabled = call.argument<Boolean>("enabled") ?: true
+                        prefs.edit().putBoolean("ola_blocker_enabled", enabled).apply()
+                        result.success(null)
+                    }
+
                     // ── Get all app states ──────────────────────────────
                     "getAllAppStates" -> {
                         val statesMap = mutableMapOf<String, Any>()
@@ -133,7 +205,11 @@ class MainActivity : FlutterActivity() {
                             statesMap["${appId}_price_min"] = prefs.getFloat("price_min_$appId", 0.0f).toDouble()
                             statesMap["${appId}_price_max"] = prefs.getFloat("price_max_$appId", 1500.0f).toDouble()
                         }
+                        statesMap["ola_blocker_enabled"] = prefs.getBoolean("ola_blocker_enabled", true)
+                        statesMap["isAppPurchased"] = prefs.getBoolean("isAppPurchased", false)
                         statesMap["totalAccepted"] = prefs.getInt("totalAccepted", 0)
+                        statesMap["totalSkipped"] = prefs.getInt("totalSkipped", 0)
+                        statesMap["totalEarnings"] = prefs.getFloat("totalEarnings", 0.0f).toDouble()
                         statesMap["isHUDEnabled"] = prefs.getBoolean("isHUDEnabled", true)
                         statesMap["locationProfiles"] = prefs.getString("locationProfiles", "[]") ?: "[]"
                         result.success(statesMap)
@@ -149,11 +225,16 @@ class MainActivity : FlutterActivity() {
                 }
             }
 
-        // Callbacks: Service → Flutter
         RapidoAutoClickService.onRideAccepted = { appName, location ->
             runOnUiThread {
                 MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
                     .invokeMethod("onRideAccepted", mapOf("appName" to appName, "location" to location))
+            }
+        }
+        RapidoAutoClickService.onRideSkipped = { appName, location ->
+            runOnUiThread {
+                MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
+                    .invokeMethod("onRideSkipped", mapOf("appName" to appName, "location" to location))
             }
         }
         RapidoAutoClickService.onRideDetected = { appName, info ->
@@ -179,3 +260,8 @@ class MainActivity : FlutterActivity() {
         return enabled.contains("RapidoAutoClickService", ignoreCase = true)
     }
 }
+
+
+
+
+
