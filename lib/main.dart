@@ -11,10 +11,52 @@ import 'login_page.dart';
 import 'profile_page.dart';
 import 'package:socket_io_client/socket_io_client.dart' as IO;
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:speech_to_text/speech_to_text.dart' as stt;
+
+bool isTamil = false;
+
+final Map<String, String> _ta = {
+  'Auto Clicker': 'ஆட்டோ கிளிக்கர்',
+  'Open Profile': 'புரொஃபைல்',
+  'Ride Accept Automation': 'தானாக சவாரி ஏற்கும் வசதி',
+  'Active': 'செயலில்',
+  'Show Floating Icon': 'மிதக்கும் ஐகானைக் காட்டு',
+  'Display status over other apps': 'மற்ற ஆப்கள் மீதும் நிலையைக் காட்டு',
+  'Location Profiles': 'லொகேஷன் ப்ரொஃபைல்ஸ்',
+  'No profiles added. Add a profile for predefined locations.': 'இன்னும் ப்ரொஃபைல் சேர்க்கப்படவில்லை. மேலே புதிய ப்ரொஃபைலைச் சேர்க்கவும்.',
+  'Accepted': 'ஏற்றுக்கொண்டவை',
+  'Skipped': 'தவிர்த்தவை',
+  'Earnings': 'வருமானம்',
+  'Status': 'நிலை',
+  'Open Ride History Page': 'சவாரி வரலாற்றைத் திறக்க',
+  'Apps': 'ஆப்கள்',
+  'Enable Auto Click': 'ஆட்டோ கிளிக்கரை ஆன் செய்',
+  'Pickup Distance': 'பிக்-அப் தூரம்',
+  'Drop Distance': 'ட்ராப் தூரம்',
+  'Price Range': 'கட்டணம்',
+  'Set Crop Box': 'க்ராப் பாக்ஸ் (Crop Box) அமை',
+  'Save Filters': 'சேமி',
+  'How It Works': 'இது எப்படி இயங்குகிறது?',
+  'First enable Accessibility Service!': 'முதலில் Accessibility Service-ஐ ஆன் செய்யவும்!',
+  'Enable Accessibility Service': 'Accessibility Service-ஐ ஆன் செய்யவும்',
+  'Required to auto-click Accept buttons': 'Accept பட்டனை தானாக கிளிக் செய்ய இது அவசியம்',
+  'GO TO SETTINGS': 'செட்டிங்ஸ் செல்',
+  'Ride History': 'சவாரி வரலாறு',
+  'Valid Data': 'சரியான தரவு',
+  'All': 'அனைத்தும்',
+};
+
+String t(String text) {
+  if (isTamil && _ta.containsKey(text)) {
+    return _ta[text]!;
+  }
+  return text;
+}
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   final prefs = await SharedPreferences.getInstance();
+  isTamil = prefs.getBool('isTamil') ?? false;
   final bool isLoggedIn = prefs.getString('driverId') != null;
   runApp(RapidoAutoClickerApp(home: isLoggedIn ? const HomePage() : const LoginPage()));
 }
@@ -57,6 +99,7 @@ class AppInfo {
   final Color primaryColor;
   final Color cardColor;
   final String acceptButtonName;
+  final bool isAvailable;
 
   const AppInfo({
     required this.id,
@@ -65,6 +108,7 @@ class AppInfo {
     required this.primaryColor,
     required this.cardColor,
     required this.acceptButtonName,
+    this.isAvailable = true,
   });
 }
 
@@ -84,6 +128,7 @@ const List<AppInfo> kApps = [
     primaryColor: Color(0xFFFFFFFF),
     cardColor: Color(0xFF1A1A1A),
     acceptButtonName: '"Match" button',
+    isAvailable: false,
   ),
   AppInfo(
     id: 'azhai',
@@ -162,8 +207,6 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   // Per-app state
   final Map<String, bool> _appEnabled = {};
-  final Map<String, String> _appLocation = {};
-  final Map<String, TextEditingController> _controllers = {};
   final Map<String, RangeValues> _pickupRanges = {};
   final Map<String, RangeValues> _dropRanges = {};
   final Map<String, RangeValues> _priceRanges = {};
@@ -178,8 +221,6 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     for (final app in kApps) {
       _appEnabled[app.id] = false;
-      _appLocation[app.id] = '';
-      _controllers[app.id] = TextEditingController();
       _pickupRanges[app.id] = const RangeValues(0.0, 5.0);
       _dropRanges[app.id] = const RangeValues(0.0, 50.0);
       _priceRanges[app.id] = const RangeValues(0.0, 1500.0);
@@ -207,13 +248,23 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
     _socket?.onConnect((_) {
       debugPrint('Connected to socket server');
+      if (_driverId != null) {
+        _socket?.emit('identifyClicker', {'driverId': _driverId});
+      }
     });
 
     _socket?.on('clickerPaymentStatus', (data) {
       if (data['status'] == 'paid') {
-        _unlockApp();
+        _unlockApp(showDialogMessage: true);
       } else {
         setState(() => _isAppPurchased = false);
+        _handleUnpaidStatus();
+      }
+    });
+
+    _socket?.on('clickerBlockStatus', (data) {
+      if (data['isBlocked'] == true) {
+        _fetchAcceptedTripsFromDB();
       }
     });
 
@@ -223,6 +274,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   }
 
   void _handleLogout(String message) async {
+    for (final app in kApps) {
+      if (_appEnabled[app.id] == true) {
+        _setAppEnabled(app.id, false);
+      }
+    }
     final prefs = await SharedPreferences.getInstance();
     await prefs.clear();
     if (!mounted) return;
@@ -239,7 +295,6 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     _socket?.disconnect();
     _socket?.dispose();
     WidgetsBinding.instance.removeObserver(this);
-    for (final c in _controllers.values) c.dispose();
     super.dispose();
   }
 
@@ -259,6 +314,25 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           _totalAccepted++;
           _lastActivity = '✅ [$appName] Accepted → $location';
         });
+
+        // Notify backend about the accepted trip
+        if (_driverId != null) {
+          http.post(
+            Uri.parse('http://43.205.135.3:3000/api/update-clicker-trip'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({'driver_id': _driverId}),
+          ).then((response) {
+            if (response.statusCode == 200) {
+              final data = jsonDecode(response.body);
+              if (data['is_blocked'] == true) {
+                // If backend says blocked, fetch states again to trigger paywall
+                _loadAllStates();
+              }
+            }
+          }).catchError((e) {
+            debugPrint('Failed to update trip count to backend: $e');
+          });
+        }
       } else if (call.method == 'onRideDetected') {
         final appName = call.arguments['appName'] as String? ?? '';
         final info = call.arguments['info'] as String? ?? '';
@@ -277,9 +351,6 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         setState(() {
           for (final app in kApps) {
             _appEnabled[app.id] = result['${app.id}_enabled'] as bool? ?? false;
-            _appLocation[app.id] = result['${app.id}_location'] as String? ?? '';
-            final loc = _appLocation[app.id] ?? '';
-            if (loc.isNotEmpty) _controllers[app.id]!.text = loc;
             double pMin = (result['${app.id}_pickup_min'] as num?)?.toDouble() ?? 0.0;
             double pMax = (result['${app.id}_pickup_max'] as num?)?.toDouble() ?? 5.0;
             if (pMax > 5.0) pMax = 5.0;
@@ -327,9 +398,28 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
             return;
           }
           if (data['status'] == 'success') {
+          final acceptedTrips = data['profile']['acceptedTrips'] ?? 0;
+          final hasPaid = data['profile']['hasPaidForClicker'] ?? false;
+
+          if (data['profile']['isBlocked'] == true) {
+            if (acceptedTrips >= 20 && !hasPaid) {
+              // Paywall block
+              setState(() {
+                _totalAccepted = acceptedTrips;
+                _isAppPurchased = false;
+              });
+              _enforcePaywallIfNeeded();
+              return;
+            } else {
+              // Admin manual block
+              _handleLogout('Access Blocked by Admin. Please contact support.');
+              return;
+            }
+          }
+
           setState(() {
-            _totalAccepted = data['profile']['acceptedTrips'] ?? 0;
-            _isAppPurchased = data['profile']['hasPaidForClicker'] ?? false;
+            _totalAccepted = acceptedTrips;
+            _isAppPurchased = hasPaid;
           });
           _enforcePaywallIfNeeded();
         }
@@ -441,11 +531,55 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     }
   }
 
-  void _unlockApp() async {
-    setState(() => _isAppPurchased = true);
+  void _unlockApp({bool showDialogMessage = false}) async {
+    setState(() {
+      _isAppPurchased = true;
+      _totalAccepted = 0;
+    });
     await _channel.invokeMethod('setAppPurchased', {'purchased': true});
     if (mounted && Navigator.canPop(context)) {
       Navigator.pop(context); // Close the dialog
+    }
+    if (showDialogMessage && mounted) {
+      showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+          backgroundColor: const Color(0xFF1E1E1E),
+          title: const Text('Payment Successful', style: TextStyle(color: Colors.green, fontWeight: FontWeight.bold)),
+          content: const Text('Your payment was received. Auto Clicker is now unlocked!', style: TextStyle(color: Colors.white)),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('OK', style: TextStyle(color: Color(0xFFFFCC00))),
+            )
+          ]
+        )
+      );
+    }
+  }
+
+  void _handleUnpaidStatus() {
+    if (mounted && Navigator.canPop(context)) {
+      Navigator.pop(context); // Close any existing dialog
+    }
+    if (mounted) {
+      showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+          backgroundColor: const Color(0xFF1E1E1E),
+          title: const Text('Payment Failed', style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold)),
+          content: const Text('Your payment was not received or please try again or contact the admin via WhatsApp.', style: TextStyle(color: Colors.white)),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.pop(context);
+                _enforcePaywallIfNeeded();
+              },
+              child: const Text('OK', style: TextStyle(color: Color(0xFFFFCC00))),
+            )
+          ]
+        )
+      );
     }
   }
 
@@ -489,67 +623,125 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     final isEditing = profile != null;
     final nameCtrl = TextEditingController(text: profile?.name ?? '');
     final locsCtrl = TextEditingController(text: profile?.locations ?? '');
+    
+    stt.SpeechToText speech = stt.SpeechToText();
+    bool isListening = false;
 
     showDialog(
       context: context,
       builder: (context) {
-        return AlertDialog(
-          backgroundColor: const Color(0xFF1A1A1A),
-          title: Text(isEditing ? 'Edit Profile' : 'New Profile',
-              style: const TextStyle(color: Colors.white)),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: nameCtrl,
-                style: const TextStyle(color: Colors.white),
-                decoration: const InputDecoration(
-                  labelText: 'Profile Name (e.g. Home)',
-                  labelStyle: TextStyle(color: Colors.white54),
-                ),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: locsCtrl,
-                style: const TextStyle(color: Colors.white),
-                decoration: const InputDecoration(
-                  labelText: 'Locations (comma separated)',
-                  labelStyle: TextStyle(color: Colors.white54),
-                ),
-                maxLines: 3,
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('CANCEL', style: TextStyle(color: Colors.white54)),
-            ),
-            ElevatedButton(
-              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFFFCC00)),
-              onPressed: () {
-                final name = nameCtrl.text.trim();
-                final locs = locsCtrl.text.trim();
-                if (name.isEmpty || locs.isEmpty) return;
-                
-                setState(() {
-                  if (isEditing) {
-                    profile.name = name;
-                    profile.locations = locs;
-                  } else {
-                    _profiles.add(LocationProfile(
-                      id: DateTime.now().millisecondsSinceEpoch.toString(),
-                      name: name,
-                      locations: locs,
-                    ));
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            
+            void _listen() async {
+              if (!isListening) {
+                bool available = await speech.initialize(
+                  onStatus: (val) {
+                    if (val == 'done' || val == 'notListening') {
+                      setDialogState(() => isListening = false);
+                    }
+                  },
+                  onError: (val) {
+                    setDialogState(() => isListening = false);
+                  },
+                );
+                if (available) {
+                  setDialogState(() => isListening = true);
+                  
+                  String existingText = locsCtrl.text.trim();
+                  if (existingText.isNotEmpty && !existingText.endsWith(',')) {
+                    existingText += ', ';
                   }
-                });
-                _saveProfiles();
-                Navigator.pop(context);
-              },
-              child: const Text('SAVE', style: TextStyle(color: Colors.black)),
-            ),
-          ],
+                  
+                  speech.listen(
+                    onResult: (val) {
+                      setDialogState(() {
+                        locsCtrl.text = existingText + val.recognizedWords;
+                        locsCtrl.selection = TextSelection.fromPosition(TextPosition(offset: locsCtrl.text.length));
+                      });
+                    },
+                  );
+                }
+              } else {
+                setDialogState(() => isListening = false);
+                speech.stop();
+              }
+            }
+
+            return AlertDialog(
+              backgroundColor: const Color(0xFF1A1A1A),
+              title: Text(isEditing ? 'Edit Profile' : 'New Profile',
+                  style: const TextStyle(color: Colors.white)),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextField(
+                    controller: nameCtrl,
+                    style: const TextStyle(color: Colors.white),
+                    decoration: const InputDecoration(
+                      labelText: 'Profile Name (e.g. Home)',
+                      labelStyle: TextStyle(color: Colors.white54),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: locsCtrl,
+                          style: const TextStyle(color: Colors.white),
+                          decoration: const InputDecoration(
+                            labelText: 'Locations (comma separated)',
+                            labelStyle: TextStyle(color: Colors.white54),
+                          ),
+                          maxLines: 3,
+                        ),
+                      ),
+                      IconButton(
+                        icon: Icon(
+                          isListening ? Icons.mic : Icons.mic_none,
+                          color: isListening ? Colors.red : const Color(0xFFFFCC00),
+                          size: 32,
+                        ),
+                        onPressed: _listen,
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('CANCEL', style: TextStyle(color: Colors.white54)),
+                ),
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFFFCC00)),
+                  onPressed: () {
+                    final name = nameCtrl.text.trim();
+                    final locs = locsCtrl.text.trim();
+                    if (name.isEmpty || locs.isEmpty) return;
+                    
+                    setState(() {
+                      if (isEditing) {
+                        profile.name = name;
+                        profile.locations = locs;
+                      } else {
+                        _profiles.add(LocationProfile(
+                          id: DateTime.now().millisecondsSinceEpoch.toString(),
+                          name: name,
+                          locations: locs,
+                        ));
+                      }
+                    });
+                    _saveProfiles();
+                    Navigator.pop(context);
+                  },
+                  child: const Text('SAVE', style: TextStyle(color: Colors.black)),
+                ),
+              ],
+            );
+          }
         );
       },
     );
@@ -574,12 +766,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     } catch (_) {}
   }
 
-  Future<void> _saveAppLocation(String appId, String location) async {
-    setState(() => _appLocation[appId] = location);
-    try {
-      await _channel.invokeMethod('setAppLocation', {'appId': appId, 'location': location});
-    } catch (_) {}
-  }
+
 
   Future<void> _saveAppFilters(String appId) async {
     try {
@@ -620,7 +807,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Auto Clicker', style: TextStyle(fontWeight: FontWeight.bold)),
+        title: Text(t('Auto Clicker'), style: TextStyle(fontWeight: FontWeight.bold)),
         backgroundColor: const Color(0xFF1A1A1A),
         actions: [
           TextButton.icon(
@@ -631,7 +818,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
               );
             },
             icon: const Icon(Icons.person, color: Color(0xFFFFCC00)),
-            label: const Text('Open Profile', style: TextStyle(color: Color(0xFFFFCC00), fontWeight: FontWeight.bold)),
+            label: Text(t('Open Profile'), style: TextStyle(color: Color(0xFFFFCC00), fontWeight: FontWeight.bold)),
           ),
         ],
       ),
@@ -641,6 +828,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              _buildLanguageSelector(),
               const SizedBox(height: 12),
               _buildHeader(),
               const SizedBox(height: 16),
@@ -652,7 +840,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                 width: double.infinity,
                 child: ElevatedButton.icon(
                   icon: const Icon(Icons.history, size: 18),
-                  label: const Text('Open Ride History Page', style: TextStyle(fontWeight: FontWeight.bold)),
+                  label: Text(t('Open Ride History Page'), style: TextStyle(fontWeight: FontWeight.bold)),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFFFFCC00),
                     foregroundColor: Colors.black,
@@ -674,9 +862,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
               if (!_serviceActive) const SizedBox(height: 16),
 
               // ── 4 App Cards ──
-              const Text(
-                'Apps',
-                style: TextStyle(
+              Text(
+                t('Apps'),
+                style: const TextStyle(
                     fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white),
               ),
               const SizedBox(height: 12),
@@ -695,23 +883,60 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     );
   }
 
+  Widget _buildLanguageSelector() {
+    return Container(
+      width: double.infinity,
+      decoration: BoxDecoration(
+        color: const Color(0xFF1A1A1A),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFF2A2A2A)),
+      ),
+      child: SegmentedButton<bool>(
+        style: ButtonStyle(
+          backgroundColor: MaterialStateProperty.resolveWith<Color>((Set<MaterialState> states) {
+            if (states.contains(MaterialState.selected)) return const Color(0xFFFFCC00);
+            return Colors.transparent;
+          }),
+          foregroundColor: MaterialStateProperty.resolveWith<Color>((Set<MaterialState> states) {
+            if (states.contains(MaterialState.selected)) return Colors.black;
+            return Colors.white;
+          }),
+        ),
+        segments: [
+          ButtonSegment(value: false, label: Text('English', style: TextStyle(fontWeight: FontWeight.bold))),
+          ButtonSegment(value: true, label: Text('தமிழ்', style: TextStyle(fontWeight: FontWeight.bold))),
+        ],
+        selected: {isTamil},
+        onSelectionChanged: (Set<bool> newSelection) async {
+          setState(() {
+            isTamil = newSelection.first;
+          });
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setBool('isTamil', isTamil);
+        },
+      ),
+    );
+  }
+
   // ── Header ────────────────────────────────────────────────────────────────
 
   Widget _buildHeader() {
     final activeCount = _appEnabled.values.where((v) => v).length;
     return Row(
       children: [
-        const Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('Auto Clicker',
-                style: TextStyle(
-                    fontSize: 26, fontWeight: FontWeight.bold, color: Colors.white)),
-            Text('Ride Accept Automation',
-                style: TextStyle(fontSize: 13, color: Color(0xFFB3B3B3))),
-          ],
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(t('Auto Clicker'),
+                  style: TextStyle(
+                      fontSize: 26, fontWeight: FontWeight.bold, color: Colors.white)),
+              Text(t('Ride Accept Automation'),
+                  style: TextStyle(fontSize: 13, color: Color(0xFFB3B3B3))),
+            ],
+          ),
         ),
-        const Spacer(),
+        const SizedBox(width: 8),
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
           decoration: BoxDecoration(
@@ -726,7 +951,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
             ),
           ),
           child: Text(
-            '$activeCount Active',
+            '$activeCount ${t('Active')}',
             style: TextStyle(
                 fontSize: 12,
                 fontWeight: FontWeight.bold,
@@ -751,25 +976,22 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         border: Border.all(color: const Color(0xFF2A2A2A)),
       ),
       child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          const Row(
-            children: [
-              Icon(Icons.layers, color: Color(0xFFFFCC00), size: 24),
-              SizedBox(width: 12),
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text('Show Floating Icon',
-                      style: TextStyle(
-                          fontSize: 14,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.white)),
-                  Text('Display status over other apps',
-                      style: TextStyle(fontSize: 11, color: Color(0xFFB3B3B3))),
-                ],
-              ),
-            ],
+          Icon(Icons.layers, color: Color(0xFFFFCC00), size: 24),
+          SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(t('Show Floating Icon'),
+                    style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white)),
+                Text(t('Display status over other apps'),
+                    style: TextStyle(fontSize: 11, color: Color(0xFFB3B3B3))),
+              ],
+            ),
           ),
           Switch(
             value: _isHUDEnabled,
@@ -799,18 +1021,15 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              const Row(
-                children: [
-                  Icon(Icons.location_on, color: Color(0xFFFFCC00), size: 20),
-                  SizedBox(width: 8),
-                  Text('Location Profiles',
-                      style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.white)),
-                ],
+              Icon(Icons.location_on, color: Color(0xFFFFCC00), size: 20),
+              SizedBox(width: 8),
+              Expanded(
+                child: Text(t('Location Profiles'),
+                    style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white)),
               ),
               IconButton(
                 icon: const Icon(Icons.add_circle, color: Color(0xFFFFCC00)),
@@ -822,7 +1041,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           ),
           if (_profiles.isEmpty) ...[
             const SizedBox(height: 12),
-            const Text('No profiles added. Add a profile for predefined locations.',
+            Text(t('No profiles added. Add a profile for predefined locations.'),
                 style: TextStyle(fontSize: 12, color: Color(0xFFB3B3B3))),
           ] else ...[
             const SizedBox(height: 12),
@@ -904,7 +1123,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                   children: [
                     Text('$_totalAccepted',
                         style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: Color(0xFFFFCC00))),
-                    const Text('Accepted', style: TextStyle(fontSize: 11, color: Color(0xFFB3B3B3))),
+                    Text(t('Accepted'), style: TextStyle(fontSize: 11, color: Color(0xFFB3B3B3))),
                   ],
                 ),
               ),
@@ -914,7 +1133,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                   children: [
                     Text('$_totalSkipped',
                         style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: Colors.redAccent)),
-                    const Text('Skipped', style: TextStyle(fontSize: 11, color: Color(0xFFB3B3B3))),
+                    Text(t('Skipped'), style: TextStyle(fontSize: 11, color: Color(0xFFB3B3B3))),
                   ],
                 ),
               ),
@@ -924,7 +1143,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                   children: [
                     Text('₹${_totalEarnings.toStringAsFixed(0)}',
                         style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: Colors.greenAccent)),
-                    const Text('Earnings', style: TextStyle(fontSize: 11, color: Color(0xFFB3B3B3))),
+                    Text(t('Earnings'), style: TextStyle(fontSize: 11, color: Color(0xFFB3B3B3))),
                   ],
                 ),
               ),
@@ -972,7 +1191,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Row(
+          Row(
             children: [
               Icon(Icons.warning_amber_rounded, color: Color(0xFFF44336), size: 20),
               SizedBox(width: 8),
@@ -1013,10 +1232,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   Widget _buildAppCard(AppInfo app) {
     final isEnabled = _appEnabled[app.id] ?? false;
-    final location = _appLocation[app.id] ?? '';
-    final ctrl = _controllers[app.id]!;
 
-    return AnimatedContainer(
+    Widget cardContent = AnimatedContainer(
       duration: const Duration(milliseconds: 300),
       decoration: BoxDecoration(
         color: isEnabled ? app.cardColor : const Color(0xFF1A1A1A),
@@ -1046,18 +1263,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                               fontWeight: FontWeight.bold,
                               color: Colors.white)),
                       Text(
-                        isEnabled
-                            ? (location.isEmpty
-                                ? '⚠️ Set drop location below'
-                                : '🎯 Target: $location')
-                            : 'Disabled',
+                        !app.isAvailable ? 'Coming Soon' : (isEnabled ? 'Listening via Location Profile' : 'Disabled'),
                         style: TextStyle(
                             fontSize: 12,
-                            color: isEnabled
-                                ? (location.isEmpty
-                                    ? const Color(0xFFFF9800)
-                                    : app.primaryColor)
-                                : const Color(0xFF666666)),
+                            color: !app.isAvailable ? Colors.redAccent : (isEnabled ? app.primaryColor : const Color(0xFF666666))),
                       ),
                     ],
                   ),
@@ -1065,7 +1274,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                 // Enable toggle
                 Switch(
                   value: isEnabled,
-                  onChanged: (val) {
+                  onChanged: !app.isAvailable ? null : (val) {
                     if (val && !_serviceActive) {
                       _showSnack('First enable Accessibility Service!');
                       return;
@@ -1078,6 +1287,20 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
               ],
             ),
           ),
+
+          if (!app.isAvailable)
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              decoration: BoxDecoration(
+                color: Colors.redAccent.withOpacity(0.1),
+              ),
+              child: const Text(
+                'Uber auto-accept is temporarily unavailable. We are working on bringing this feature in a future update.',
+                style: TextStyle(color: Colors.redAccent, fontSize: 12, fontStyle: FontStyle.italic),
+                textAlign: TextAlign.center,
+              ),
+            ),
 
           // ── Location input (always visible) ──
           if (app.id == 'ola') ...[
@@ -1106,70 +1329,6 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
             padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
             child: Column(
               children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: SizedBox(
-                        height: 44,
-                        child: TextField(
-                          controller: ctrl,
-                          style: const TextStyle(color: Colors.white, fontSize: 14),
-                          decoration: InputDecoration(
-                            hintText: 'Drop locations (e.g. Kovur, Porur, Guindy)',
-                            hintStyle: const TextStyle(color: Color(0xFF555555), fontSize: 12),
-                            filled: true,
-                            fillColor: const Color(0xFF111111),
-                            border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(10),
-                              borderSide: const BorderSide(color: Color(0xFF333333)),
-                            ),
-                            enabledBorder: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(10),
-                              borderSide: const BorderSide(color: Color(0xFF333333)),
-                            ),
-                            focusedBorder: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(10),
-                              borderSide: BorderSide(color: app.primaryColor),
-                            ),
-                            contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                          ),
-                          onSubmitted: (val) {
-                            if (val.trim().isNotEmpty) {
-                              _saveAppLocation(app.id, val.trim());
-                              _showSnack('${app.name}: Saved → ${val.trim()}');
-                            }
-                          },
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    SizedBox(
-                      height: 44,
-                      child: ElevatedButton(
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: app.primaryColor,
-                          foregroundColor: Colors.black,
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                          padding: const EdgeInsets.symmetric(horizontal: 14),
-                        ),
-                        onPressed: () {
-                          final loc = ctrl.text.trim();
-                          if (loc.isEmpty) {
-                            _showSnack('Location enter பண்ணுங்கள்!');
-                            return;
-                          }
-                          _saveAppLocation(app.id, loc);
-                          _showSnack('${app.name}: Saved → $loc');
-                          FocusScope.of(context).unfocus();
-                        },
-                        child: const Text('Save',
-                            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 12),
-                
                 // ── Distance Sliders ──
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -1301,6 +1460,14 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         ],
       ),
     );
+
+    if (!app.isAvailable) {
+      return Opacity(
+        opacity: 0.6,
+        child: IgnorePointer(child: cardContent),
+      );
+    }
+    return cardContent;
   }
 
   // ── How It Works Card ─────────────────────────────────────────────────────
@@ -1680,7 +1847,7 @@ class _RideHistoryPageState extends State<RideHistoryPage> {
       length: kApps.length + 1, // All + each app
       child: Scaffold(
         appBar: AppBar(
-          title: const Text('Ride History', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+          title: Text(t('Ride History'), style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
           backgroundColor: const Color(0xFF1A1A1A),
           bottom: TabBar(
             isScrollable: true,
@@ -1702,9 +1869,9 @@ class _RideHistoryPageState extends State<RideHistoryPage> {
                     child: SizedBox(
                       width: double.infinity,
                       child: SegmentedButton<DataFilter>(
-                        segments: const [
-                          ButtonSegment(value: DataFilter.all, label: Text('All')),
-                          ButtonSegment(value: DataFilter.withData, label: Text('Valid Data')),
+                        segments: [
+                          ButtonSegment(value: DataFilter.all, label: Text(t('All'))),
+                          ButtonSegment(value: DataFilter.withData, label: Text(t('Valid Data'))),
                           ButtonSegment(value: DataFilter.withoutData, label: Text('No Data')),
                         ],
                         selected: {_currentFilter},

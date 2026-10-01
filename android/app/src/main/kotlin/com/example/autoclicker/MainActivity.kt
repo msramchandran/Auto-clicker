@@ -122,25 +122,6 @@ class MainActivity : FlutterActivity() {
                         }
                     }
 
-                    // ── Per-App: Set Target Location ────────────────────
-                    // args: { "appId": "rapido", "location": "Kovur" }
-                    "setAppLocation" -> {
-                        val appId = call.argument<String>("appId") ?: ""
-                        val location = call.argument<String>("location") ?: ""
-                        val config = RapidoAutoClickService.APP_CONFIGS.find {
-                            it.prefKeyLocation == "location_$appId"
-                        }
-                        if (config != null) {
-                            prefs.edit().putString(config.prefKeyLocation, location).apply()
-                            RapidoAutoClickService.instance?.updateNotification(
-                                buildActiveAppsText()
-                            )
-                            result.success(null)
-                        } else {
-                            result.error("NOT_FOUND", "App config not found: $appId", null)
-                        }
-                    }
-
                     // ── Per-App: Set Filters ────────────────────────────
                     // args: { "appId": "rapido", "pickupMin": 0.0, ... "priceMin": 0.0, "priceMax": 1000.0 }
                     "setAppFilters" -> {
@@ -197,7 +178,6 @@ class MainActivity : FlutterActivity() {
                         RapidoAutoClickService.APP_CONFIGS.forEach { config ->
                             val appId = config.prefKeyEnabled.removePrefix("enabled_")
                             statesMap["${appId}_enabled"] = prefs.getBoolean(config.prefKeyEnabled, false)
-                            statesMap["${appId}_location"] = prefs.getString(config.prefKeyLocation, "") ?: ""
                             statesMap["${appId}_pickup_min"] = prefs.getFloat("pickup_min_$appId", 0.0f).toDouble()
                             statesMap["${appId}_pickup_max"] = prefs.getFloat("pickup_max_$appId", 5.0f).toDouble()
                             statesMap["${appId}_drop_min"] = prefs.getFloat("drop_min_$appId", 0.0f).toDouble()

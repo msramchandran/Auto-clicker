@@ -48,7 +48,7 @@ class RapidoAutoClickService : AccessibilityService() {
                 packageName = "com.rapido.rider",
                 displayName = "Rapido",
                 // Yellow "Accept" button
-                acceptButtonKeywords = listOf("accept"),
+                acceptButtonKeywords = listOf("accept", "ஏற்றுக்கொள்"),
                 prefKeyEnabled = "enabled_rapido",
                 prefKeyLocation = "location_rapido"
             ),
@@ -71,8 +71,8 @@ class RapidoAutoClickService : AccessibilityService() {
             AppConfig(
                 packageName = "com.olacabs.oladriver",
                 displayName = "OLA",
-                // Dark grey "Accept in 5" countdown button — number changes so use "accept in"
-                acceptButtonKeywords = listOf("accept in", "accept"),
+                // Dark grey "Accept in 5" countdown button - number changes so use "accept in"
+                acceptButtonKeywords = listOf("accept in", "accept", "ஏற்றுக்கொள்"),
                 prefKeyEnabled = "enabled_ola",
                 prefKeyLocation = "location_ola"
             )
@@ -205,6 +205,7 @@ class RapidoAutoClickService : AccessibilityService() {
         val appConfig = APP_CONFIGS.find { it.packageName == pkg }
         if (appConfig == null) {
             updateHUD("", isVisible = false) // Hide if we switch to non-target app
+            updateBlocker(null, false)
             return
         }
 
@@ -827,7 +828,7 @@ class RapidoAutoClickService : AccessibilityService() {
     private fun updateBlocker(bounds: android.graphics.Rect?, show: Boolean) {
         val wm = getSystemService(Context.WINDOW_SERVICE) as? android.view.WindowManager ?: return
         
-        if (!show || bounds == null) {
+        if (bounds == null) {
             blockerOverlay?.let { 
                 try { wm.removeView(it) } catch (e: Exception) {}
                 blockerOverlay = null
@@ -835,32 +836,43 @@ class RapidoAutoClickService : AccessibilityService() {
             return
         }
 
-        // Add some padding to ensure it covers even if there's a small offset
-        val pad = 60
+        // Add HUGE padding to ensure it covers the entire bottom area even before rendering
+        val pad = 200
         val targetX = bounds.left - pad
         val targetY = bounds.top - pad
         val targetW = bounds.width() + (pad * 2)
         val targetH = bounds.height() + (pad * 2)
 
+        val flagsActive = android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                android.view.WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                android.view.WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+                
+        val flagsHidden = flagsActive or android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+
+        val currentFlags = if (show) flagsActive else flagsHidden
+        val currentColor = if (show) android.graphics.Color.parseColor("#44FF0000") else android.graphics.Color.TRANSPARENT
+
         if (blockerOverlay != null) {
             val params = blockerOverlay?.layoutParams as? android.view.WindowManager.LayoutParams
-            if (params != null && (params.x != targetX || params.y != targetY || params.height != targetH)) {
+            if (params != null) {
                 params.x = targetX
                 params.y = targetY
                 params.width = targetW
                 params.height = targetH
+                params.flags = currentFlags
+                blockerOverlay?.setBackgroundColor(currentColor)
                 try { wm.updateViewLayout(blockerOverlay, params) } catch (e: Exception) {}
             }
             return
         }
 
+        if (!show) return // Don't create initially if false
+
         val params = android.view.WindowManager.LayoutParams(
             targetW,
             targetH,
             android.view.WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-            android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-            android.view.WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
-            android.view.WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            currentFlags,
             android.graphics.PixelFormat.TRANSLUCENT
         )
         params.gravity = android.view.Gravity.TOP or android.view.Gravity.START
@@ -868,7 +880,7 @@ class RapidoAutoClickService : AccessibilityService() {
         params.y = targetY
 
         val view = android.widget.FrameLayout(this)
-        view.setBackgroundColor(android.graphics.Color.parseColor("#44FF0000")) 
+        view.setBackgroundColor(currentColor) 
         view.setOnTouchListener { _, _ -> true }
 
         try {
