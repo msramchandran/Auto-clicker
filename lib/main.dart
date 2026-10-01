@@ -4,13 +4,19 @@ import 'package:flutter/services.dart';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
+import 'package:gal/gal.dart';
 
 import 'package:flutter/services.dart';
 import 'login_page.dart';
+import 'profile_page.dart';
+import 'package:socket_io_client/socket_io_client.dart' as IO;
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  runApp(const RapidoAutoClickerApp());
+  final prefs = await SharedPreferences.getInstance();
+  final bool isLoggedIn = prefs.getString('driverId') != null;
+  runApp(RapidoAutoClickerApp(home: isLoggedIn ? const HomePage() : const LoginPage()));
 }
 
 
@@ -18,7 +24,8 @@ void main() async {
 // App Root
 // ─────────────────────────────────────────────────────────────────────────────
 class RapidoAutoClickerApp extends StatelessWidget {
-  const RapidoAutoClickerApp({super.key});
+  final Widget home;
+  const RapidoAutoClickerApp({super.key, required this.home});
 
   @override
   Widget build(BuildContext context) {
@@ -35,7 +42,7 @@ class RapidoAutoClickerApp extends StatelessWidget {
         scaffoldBackgroundColor: const Color(0xFF0F0F0F),
         useMaterial3: true,
       ),
-      home: const LoginPage(),
+      home: home,
     );
   }
 }
@@ -141,11 +148,16 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
+  String? _driverId;
+  String? _deviceId;
+  IO.Socket? _socket;
   bool _serviceActive = false;
   bool _isHUDEnabled = true;
   bool _olaBlockerEnabled = true;
   bool _isAppPurchased = false;
   int _totalAccepted = 0;
+  int _totalSkipped = 0;
+  double _totalEarnings = 0.0;
   String _lastActivity = 'Waiting for ride requests...';
 
   // Per-app state
@@ -162,6 +174,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
+    _initDriverId();
     WidgetsBinding.instance.addObserver(this);
     for (final app in kApps) {
       _appEnabled[app.id] = false;
@@ -175,8 +188,56 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     _setupMethodCallHandler();
   }
 
+  Future<void> _initDriverId() async {
+    final prefs = await SharedPreferences.getInstance();
+    setState(() {
+      _driverId = prefs.getString('driverId');
+      _deviceId = prefs.getString('deviceId');
+    });
+    _initSocketAndDriver();
+  }
+  
+  void _initSocketAndDriver() {
+    if (_driverId == null) return;
+    _socket = IO.io('http://43.205.135.3:3000', <String, dynamic>{
+      'transports': ['websocket'],
+      'autoConnect': true,
+      'query': {'driver_id': _driverId},
+    });
+
+    _socket?.onConnect((_) {
+      debugPrint('Connected to socket server');
+    });
+
+    _socket?.on('clickerPaymentStatus', (data) {
+      if (data['status'] == 'paid') {
+        _unlockApp();
+      } else {
+        setState(() => _isAppPurchased = false);
+      }
+    });
+
+    _socket?.on('forceLogout', (data) {
+      _handleLogout(data['message'] ?? 'Logged in from another device.');
+    });
+  }
+
+  void _handleLogout(String message) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.clear();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message), backgroundColor: Colors.red));
+    Navigator.pushAndRemoveUntil(
+      context,
+      MaterialPageRoute(builder: (context) => const LoginPage()),
+      (route) => false,
+    );
+  }
+
   @override
   void dispose() {
+    _socket?.disconnect();
+    _socket?.dispose();
     WidgetsBinding.instance.removeObserver(this);
     for (final c in _controllers.values) c.dispose();
     super.dispose();
@@ -233,6 +294,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
             );
           }
           _totalAccepted = result['totalAccepted'] as int? ?? 0;
+            _totalSkipped = result['totalSkipped'] as int? ?? 0;
+            _totalEarnings = (result['totalEarnings'] as num?)?.toDouble() ?? 0.0;
           _isHUDEnabled = result['isHUDEnabled'] as bool? ?? true;
           
           final profilesJson = result['locationProfiles'] as String? ?? '[]';
@@ -241,10 +304,149 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
             _profiles = decoded.map((e) => LocationProfile.fromJson(e)).toList();
           } catch (_) {
             _profiles = [];
+            }
+          });
+          _fetchAcceptedTripsFromDB();
+        }
+    } catch (_) {}
+  }
+
+
+  Future<void> _fetchAcceptedTripsFromDB() async {
+    if (_driverId == null) return;
+    try {
+      final response = await http.post(
+        Uri.parse('http://43.205.135.3:3000/api/clicker-profile'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'driver_id': _driverId, 'device_id': _deviceId ?? ''}),
+      );
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        if (data['status'] == 'logout') {
+            _handleLogout(data['message'] ?? 'Logged in from another device.');
+            return;
           }
-        });
+          if (data['status'] == 'success') {
+          setState(() {
+            _totalAccepted = data['profile']['acceptedTrips'] ?? 0;
+            _isAppPurchased = data['profile']['hasPaidForClicker'] ?? false;
+          });
+          _enforcePaywallIfNeeded();
+        }
       }
     } catch (_) {}
+  }
+
+  void _enforcePaywallIfNeeded() {
+    if (_totalAccepted >= 20 && !_isAppPurchased) {
+      for (final app in kApps) {
+        if (_appEnabled[app.id] == true) {
+          _setAppEnabled(app.id, false);
+        }
+      }
+      
+      if (!mounted) return;
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) {
+          bool isUploading = false;
+          return StatefulBuilder(
+            builder: (context, setDialogState) {
+              return WillPopScope(
+                onWillPop: () async => false,
+                child: AlertDialog(
+                  backgroundColor: const Color(0xFF1E1E1E),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                  title: const Text('Free Trial Ended', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                  content: SingleChildScrollView(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Text(
+                          'You have completed 20 accepted trips.\n\nPlease pay ₹100 via UPI to continue using AutoClicker.\n',
+                          style: TextStyle(color: Colors.white70),
+                          textAlign: TextAlign.center,
+                        ),
+                        Container(
+                          decoration: BoxDecoration(border: Border.all(color: Colors.white24, width: 2)),
+                          child: Image.asset('assets/images/qr_code.jpg', width: 200, height: 200, fit: BoxFit.cover),
+                        ),
+                        const SizedBox(height: 10),
+                        const Text(
+                          'After paying, upload the screenshot of the success page below for Admin verification.',
+                          style: TextStyle(color: Colors.yellow, fontSize: 12),
+                          textAlign: TextAlign.center,
+                        ),
+                      ],
+                    ),
+                  ),
+                  actions: [
+                      isUploading ? const SizedBox.shrink() : ElevatedButton.icon(
+                        onPressed: () async {
+                          try {
+                            final byteData = await rootBundle.load('assets/images/qr_code.jpg');
+                            final bytes = byteData.buffer.asUint8List();
+                            await Gal.putImageBytes(bytes);
+                            if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('QR Code saved to Gallery!')));
+                          } catch (e) {
+                            if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Failed to save QR Code')));
+                          }
+                        },
+                        icon: const Icon(Icons.download, color: Colors.black),
+                        label: const Text('Download QR', style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
+                        style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFFFCC00)),
+                      ),
+                      isUploading 
+                    ? const Padding(
+                        padding: EdgeInsets.all(8.0),
+                        child: CircularProgressIndicator(),
+                      )
+                    : ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.green,
+                        foregroundColor: Colors.white,
+                      ),
+                      onPressed: () async {
+                        final picker = ImagePicker();
+                        final XFile? image = await picker.pickImage(source: ImageSource.gallery);
+                        if (image != null) {
+                           setDialogState(() => isUploading = true);
+                           try {
+                             var request = http.MultipartRequest('POST', Uri.parse('http://43.205.135.3:3000/api/clicker-payment/upload'));
+                             request.fields['driver_id'] = _driverId ?? '';
+                             request.files.add(await http.MultipartFile.fromPath('screenshot', image.path));
+                             var res = await request.send();
+                             if (res.statusCode == 200) {
+                                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Screenshot sent! Please wait for Admin approval.')));
+                             } else {
+                                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Failed to upload screenshot.')));
+                             }
+                           } catch (e) {
+                             ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: ' + e.toString())));
+                           }
+                           setDialogState(() => isUploading = false);
+                        }
+                      },
+                      icon: const Icon(Icons.upload_file),
+                      label: const Text('Upload Screenshot'),
+                    ),
+                  ],
+                ),
+              );
+            }
+          );
+        },
+      );
+    }
+  }
+
+  void _unlockApp() async {
+    setState(() => _isAppPurchased = true);
+    await _channel.invokeMethod('setAppPurchased', {'purchased': true});
+    if (mounted && Navigator.canPop(context)) {
+      Navigator.pop(context); // Close the dialog
+    }
   }
 
   Future<void> _checkServiceStatus() async {
@@ -417,6 +619,22 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      appBar: AppBar(
+        title: const Text('Auto Clicker', style: TextStyle(fontWeight: FontWeight.bold)),
+        backgroundColor: const Color(0xFF1A1A1A),
+        actions: [
+          TextButton.icon(
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (context) => const ProfilePage()),
+              );
+            },
+            icon: const Icon(Icons.person, color: Color(0xFFFFCC00)),
+            label: const Text('Open Profile', style: TextStyle(color: Color(0xFFFFCC00), fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
       body: SafeArea(
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(16),
@@ -677,46 +895,66 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         borderRadius: BorderRadius.circular(16),
         border: Border.all(color: const Color(0xFF2A2A2A)),
       ),
-      child: Row(
+      child: Column(
+        children: [
+          Row(
             children: [
-              // Total accepted
               Expanded(
                 child: Column(
                   children: [
                     Text('$_totalAccepted',
-                        style: const TextStyle(
-                            fontSize: 40,
-                            fontWeight: FontWeight.bold,
-                            color: Color(0xFFFFCC00))),
-                    const Text('Total Accepted',
-                        style: TextStyle(fontSize: 11, color: Color(0xFFB3B3B3))),
+                        style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: Color(0xFFFFCC00))),
+                    const Text('Accepted', style: TextStyle(fontSize: 11, color: Color(0xFFB3B3B3))),
                   ],
                 ),
               ),
-              Container(width: 1, height: 60, color: const Color(0xFF2A2A2A)),
-              // Last activity
+              Container(width: 1, height: 40, color: const Color(0xFF2A2A2A)),
               Expanded(
-                flex: 2,
-                child: Padding(
-                  padding: const EdgeInsets.only(left: 16),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text('Last Activity',
-                          style: TextStyle(fontSize: 11, color: Color(0xFFB3B3B3))),
-                      const SizedBox(height: 4),
-                      Text(
-                        _lastActivity,
-                        style: const TextStyle(fontSize: 12, color: Colors.white),
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ],
-                  ),
+                child: Column(
+                  children: [
+                    Text('$_totalSkipped',
+                        style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: Colors.redAccent)),
+                    const Text('Skipped', style: TextStyle(fontSize: 11, color: Color(0xFFB3B3B3))),
+                  ],
+                ),
+              ),
+              Container(width: 1, height: 40, color: const Color(0xFF2A2A2A)),
+              Expanded(
+                child: Column(
+                  children: [
+                    Text('₹${_totalEarnings.toStringAsFixed(0)}',
+                        style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: Colors.greenAccent)),
+                    const Text('Earnings', style: TextStyle(fontSize: 11, color: Color(0xFFB3B3B3))),
+                  ],
                 ),
               ),
             ],
           ),
+          const SizedBox(height: 16),
+          const Divider(color: Color(0xFF2A2A2A), height: 1),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('Last Activity',
+                        style: TextStyle(fontSize: 11, color: Color(0xFFB3B3B3))),
+                    const SizedBox(height: 4),
+                    Text(
+                      _lastActivity,
+                      style: const TextStyle(fontSize: 12, color: Colors.white),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
     );
   }
 
@@ -842,6 +1080,28 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           ),
 
           // ── Location input (always visible) ──
+          if (app.id == 'ola') ...[
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text('Touch protection ', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+                  Switch(
+                    value: _olaBlockerEnabled,
+                    activeColor: const Color(0xFFFFCC00),
+                    onChanged: (val) async {
+                      setState(() => _olaBlockerEnabled = val);
+                      try {
+                        await _channel.invokeMethod('setOlaBlocker', {'enabled': val});
+                      } catch (_) {}
+                    },
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+          ],
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
             child: Column(

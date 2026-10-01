@@ -1,0 +1,126 @@
+--- Snippet 0 ---
+SKIPPED
+
+--- Snippet 1 ---
+totalSkipped
+
+--- Snippet 2 ---
+totalEarnings
+
+--- Snippet 3 ---
+_totalSkipped
+
+--- Snippet 4 ---
+_totalEarnings
+
+--- Snippet 5 ---
+totalSkipped
+
+--- Snippet 6 ---
+totalEarnings
+
+--- Snippet 7 ---
+totalSkipped
+
+--- Snippet 8 ---
+totalEarnings
+
+--- Snippet 9 ---
+onRideSkipped
+
+--- Snippet 10 ---
+totalSkipped
+
+--- Snippet 11 ---
+totalEarnings
+
+--- Snippet 12 ---
+totalSkipped
+
+--- Snippet 13 ---
+totalEarnings
+
+--- Snippet 14 ---
+totalSkipped
+
+--- Snippet 15 ---
+totalEarnings
+
+--- Snippet 16 ---
+RapidoAutoClickService.onRideSkipped
+
+--- Snippet 17 ---
+int _totalSkipped = 0;
+
+--- Snippet 18 ---
+double _totalEarnings = 0.0;
+
+--- Snippet 19 ---
+result['totalSkipped']
+
+--- Snippet 20 ---
+result['totalEarnings']
+
+--- Snippet 21 ---
+onRideSkipped
+
+--- Snippet 22 ---
+onRideSkipped
+
+--- Snippet 23 ---
+onRideSkipped
+
+--- Snippet 24 ---
+_totalSkipped
+
+--- Snippet 25 ---
+_totalEarnings
+
+--- Snippet 26 ---
+onRideSkipped
+
+--- Snippet 27 ---
+_totalSkipped
+
+--- Snippet 28 ---
+_totalEarnings
+
+--- Snippet 29 ---
+onRideSkipped
+
+--- Snippet 30 ---
+totalSkipped
+
+--- Snippet 31 ---
+totalEarnings
+
+--- Snippet 32 ---
+RapidoAutoClickService.onRideSkipped
+
+--- Snippet 33 ---
+totalSkipped
+
+--- Snippet 34 ---
+totalEarnings
+
+--- Snippet 35 ---
+totalSkipped
+
+--- Snippet 36 ---
+totalEarnings
+
+--- Snippet 37 ---
+_totalSkipped
+
+--- Snippet 38 ---
+_totalEarnings
+
+--- Snippet 39 ---
+onRideSkipped
+
+--- Snippet 40 ---
+onRideSkipped
+
+--- Snippet 41 ---
+onRideSkipped
+

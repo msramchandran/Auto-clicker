@@ -16,6 +16,20 @@ class _LoginPageState extends State<LoginPage> {
   final TextEditingController _idController = TextEditingController();
   bool _isLoading = false;
 
+  @override
+  void initState() {
+    super.initState();
+    _loadSavedId();
+  }
+
+  Future<void> _loadSavedId() async {
+    final prefs = await SharedPreferences.getInstance();
+    final savedId = prefs.getString('driverId');
+    if (savedId != null && savedId.isNotEmpty) {
+      _idController.text = savedId;
+    }
+  }
+
   String _generateDeviceId() {
     const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
     final rnd = Random();
