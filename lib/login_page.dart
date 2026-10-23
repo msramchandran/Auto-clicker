@@ -3,6 +3,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
 import 'dart:math';
 import 'package:http/http.dart' as http;
+import 'package:package_info_plus/package_info_plus.dart';
 import 'main.dart'; // To navigate to HomePage
 
 class LoginPage extends StatefulWidget {
@@ -55,12 +56,19 @@ class _LoginPageState extends State<LoginPage> {
         await prefs.setString('deviceId', deviceId);
       }
 
+      String appVersion = '1.0.0';
+      try {
+        final info = await PackageInfo.fromPlatform();
+        appVersion = info.version;
+      } catch (_) {}
+
       final response = await http.post(
         Uri.parse('http://43.205.135.3:3000/api/clicker-login'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
           'driver_id': driverId,
-          'device_id': deviceId
+          'device_id': deviceId,
+          'app_version': appVersion,
         }),
       );
 

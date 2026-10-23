@@ -24,6 +24,23 @@
     
     <!-- Internet Permission for Backend API -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+
+    <!-- Queries for url_launcher to open browser / download APK -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="https" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="http" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="azhai" />
+        </intent>
+    </queries>
 
     <application
         android:label="Azhai Auto clicker"
@@ -48,6 +65,13 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- Deep Link: Azhai Partner returns to AutoClicker after AD watched -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="autoclicker" android:host="ad-complete" />
+            </intent-filter>
         </activity>
 
         <meta-data
@@ -70,6 +94,13 @@
                 android:resource="@xml/accessibility_service_config" />
         </service>
 
+            <!-- Receiver for 12hr block completion alarm notification -->
+        <receiver
+            android:name=".BlockNotificationReceiver"
+            android:exported="false" />
+        <receiver
+            android:name=".BankingModeReceiver"
+            android:exported="false" />
     </application>
 
     <queries>

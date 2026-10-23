@@ -1,12 +1,13 @@
+import 'package:app_links/app_links.dart';
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
 import 'package:gal/gal.dart';
-
-import 'package:flutter/services.dart';
+import 'package:package_info_plus/package_info_plus.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'login_page.dart';
 import 'profile_page.dart';
 import 'package:socket_io_client/socket_io_client.dart' as IO;
@@ -53,8 +54,14 @@ String t(String text) {
   return text;
 }
 
+String gAppVersion = '1.0.3';
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  try {
+    final info = await PackageInfo.fromPlatform();
+    gAppVersion = info.version;
+  } catch (_) {}
   final prefs = await SharedPreferences.getInstance();
   isTamil = prefs.getBool('isTamil') ?? false;
   final bool isLoggedIn = prefs.getString('driverId') != null;
@@ -193,6 +200,40 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
+  Future<void> _showAppNotification(String title, String message, {int id = 1002}) async {
+    try {
+      await _channel.invokeMethod('showNotification', {
+        'title': title,
+        'message': message,
+        'id': id,
+      });
+    } catch (e) {
+      debugPrint('[Notification] Error: $e');
+    }
+  }
+
+  Future<void> _scheduleBlockEndNotification(int triggerAtMillis) async {
+    try {
+      await _channel.invokeMethod('scheduleBlockEndNotification', {
+        'triggerAtMillis': triggerAtMillis,
+        'title': isTamil ? 'Auto Clicker - 12 மணி நேர தடை முடிந்தது!' : 'Auto Clicker - 12hr Block Ended',
+        'message': isTamil
+            ? 'உங்கள் தடை நீக்கப்பட்டது! இப்போது நீங்கள் ஆப்பை பயன்படுத்தலாம்.'
+            : 'Your block is removed and you can use the app now.',
+      });
+    } catch (e) {
+      debugPrint('[Notification] Schedule error: $e');
+    }
+  }
+
+  Future<void> _cancelBlockEndNotification() async {
+    try {
+      await _channel.invokeMethod('cancelBlockEndNotification');
+    } catch (e) {
+      debugPrint('[Notification] Cancel error: $e');
+    }
+  }
+
   String? _driverId;
   String? _deviceId;
   IO.Socket? _socket;
@@ -204,6 +245,17 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   int _totalSkipped = 0;
   double _totalEarnings = 0.0;
   String _lastActivity = 'Waiting for ride requests...';
+  bool _isDailyLimitActive = false;
+  int _dailyLimitEndTime = 0;
+  int _dailyTripCount = 0;
+  double _dailyEarnings = 0.0;
+  Timer? _dailyLimitCountdownTimer;
+  String _currentAppVersion = gAppVersion;
+  bool _isForceUpdateShowing = false;
+  bool _isDailyLimitDialogShowing = false;
+  bool _isAdRequired = false;
+  double _adHoursRemaining = 0.0;
+  bool _isAdDialogShowing = false;
 
   // Per-app state
   final Map<String, bool> _appEnabled = {};
@@ -227,6 +279,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     }
     _loadAllStates();
     _setupMethodCallHandler();
+    _loadAppVersion();
+    _initAdDeepLink();
+    _checkAdStatus();
   }
 
   Future<void> _initDriverId() async {
@@ -236,6 +291,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       _deviceId = prefs.getString('deviceId');
     });
     _initSocketAndDriver();
+    _fetchAcceptedTripsFromDB();
   }
   
   void _initSocketAndDriver() {
@@ -249,7 +305,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     _socket?.onConnect((_) {
       debugPrint('Connected to socket server');
       if (_driverId != null) {
-        _socket?.emit('identifyClicker', {'driverId': _driverId});
+        _socket?.emit('identifyClicker', {
+          'driverId': _driverId,
+          'appVersion': _currentAppVersion,
+        });
       }
     });
 
@@ -271,6 +330,292 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     _socket?.on('forceLogout', (data) {
       _handleLogout(data['message'] ?? 'Logged in from another device.');
     });
+
+    _socket?.on('clickerFreeTrialEnd', (data) {
+      if (mounted) {
+        setState(() => _isAppPurchased = false);
+        _enforcePaywallIfNeeded();
+      }
+    });
+
+    _socket?.on('dailyLimitReached', (data) {
+      if (mounted) {
+        final endTime = data['endTime'] as int? ?? 0;
+        final trips = data['dailyTrips'] as int? ?? 0;
+        final earnings = (data['dailyEarnings'] as num?)?.toDouble() ?? 0.0;
+        _handleDailyLimitTriggered(endTime, trips, earnings);
+      }
+    });
+
+    _socket?.on('forceAppUpdate', (data) {
+      if (mounted) {
+        final ver = data['version'] as String? ?? 'Latest';
+        final url = data['apkUrl'] as String? ?? '';
+        _showForceUpdateDialog(ver, url);
+      }
+    });
+
+    _socket?.on('adWatchCompleted', (data) {
+      if (mounted) {
+        _handleAdComplete();
+      }
+    });
+
+    _socket?.on('dailyLimitRemoved', (data) {
+      if (mounted) {
+        _dailyLimitCountdownTimer?.cancel();
+        _cancelBlockEndNotification();
+        setState(() {
+          _isDailyLimitActive = false;
+          _dailyLimitEndTime = 0;
+        });
+        if (_isDailyLimitDialogShowing) {
+          Navigator.of(context, rootNavigator: true).pop();
+          _isDailyLimitDialogShowing = false;
+        }
+        final msg = (data != null && data['message'] != null)
+            ? data['message'].toString()
+            : (isTamil
+                ? 'அட்மின் உங்கள் 12 மணி நேர தடையை நீக்கிவிட்டார்! இப்போது ஆப்களை பயன்படுத்தலாம்.'
+                : 'Your block is removed and you can use the app.');
+
+        _showAppNotification(
+          isTamil ? 'Auto Clicker - தடை நீக்கப்பட்டது!' : 'Auto Clicker - Block Removed',
+          msg,
+          id: 1006,
+        );
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(msg),
+            backgroundColor: Colors.green,
+            duration: const Duration(seconds: 4),
+          ),
+        );
+      }
+    });
+  }
+
+  // ─── AD System (6-hour access & cross-app reward) ─────────────────────────
+
+  Future<void> _checkAdStatus() async {
+    if (_driverId == null) return;
+    try {
+      final response = await http.get(
+        Uri.parse('http://43.205.135.3:3000/api/ad/status?driverId=$_driverId'),
+      ).timeout(const Duration(seconds: 6));
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        final bool needsAd = data['needsAd'] ?? false;
+        final double hoursRem = (data['hoursRemaining'] as num?)?.toDouble() ?? 0.0;
+        if (mounted) {
+          setState(() {
+            _isAdRequired = needsAd;
+            _adHoursRemaining = hoursRem;
+          });
+          if (needsAd) {
+            _disableAllApps();
+            if (!_isAdDialogShowing) {
+              _showWatchAdDialog(hoursRem);
+            }
+          } else {
+            // Already valid, close dialog if open
+            if (_isAdDialogShowing) {
+              Navigator.of(context, rootNavigator: true).pop();
+              _isAdDialogShowing = false;
+            }
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('[AD Check] Error: $e');
+    }
+  }
+
+  void _disableAllApps() {
+    for (final app in kApps) {
+      if (_appEnabled[app.id] == true) {
+        _setAppEnabled(app.id, false);
+      }
+    }
+  }
+
+  void _showWatchAdDialog(double hoursRemaining) {
+    if (!mounted || _isAdDialogShowing) return;
+    _isAdDialogShowing = true;
+    _disableAllApps();
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) {
+        return WillPopScope(
+          onWillPop: () async => false,
+          child: AlertDialog(
+            backgroundColor: const Color(0xFF1E1E1E),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            title: Row(
+              children: [
+                const Icon(Icons.play_circle_filled, color: Color(0xFF00C853), size: 28),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    isTamil ? 'விளம்பரம் பார்க்கவும்' : 'Watch Ad to Continue',
+                    style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 18),
+                  ),
+                ),
+              ],
+            ),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF0D2B0D),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: const Color(0xFF00C853).withOpacity(0.5)),
+                  ),
+                  child: Column(
+                    children: [
+                      const Icon(Icons.info_outline, color: Color(0xFF00C853), size: 24),
+                      const SizedBox(height: 8),
+                      Text(
+                        isTamil
+                            ? 'AutoClicker தொடர்ந்து பயன்படுத்த Azhai Partner செயலியில் ஒரு குறுகிய விளம்பரம் பார்க்கவும்.'
+                            : 'Watch a short Rewarded AD in Azhai Partner to continue using AutoClicker.',
+                        style: const TextStyle(color: Colors.white, fontSize: 13),
+                        textAlign: TextAlign.center,
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        isTamil
+                            ? '⚡ ஒரு முறை பார்த்தால் 6 மணி நேரம் பயன்பாடு கிடைக்கும்.'
+                            : '⚡ Once watched, you get 6 hours of full access.',
+                        style: const TextStyle(color: Color(0xFF00C853), fontSize: 12, fontWeight: FontWeight.bold),
+                        textAlign: TextAlign.center,
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: Colors.red.withOpacity(0.15),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.redAccent.withOpacity(0.4)),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.warning_amber_rounded, color: Colors.redAccent, size: 20),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          isTamil
+                              ? 'விளம்பரம் பார்க்காமல் செயலியை பயன்படுத்த முடியாது.'
+                              : 'All services disabled until AD is watched.',
+                          style: const TextStyle(color: Colors.redAccent, fontSize: 11, fontWeight: FontWeight.w600),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            actions: [
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF00C853),
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  ),
+                  icon: const Icon(Icons.open_in_new, size: 20),
+                  label: Text(
+                    isTamil ? '▶️ விளம்பரம் பார் (Azhai Partner)' : '▶️ Watch AD on Azhai Partner',
+                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+                  ),
+                  onPressed: _openAzhaiPartnerForAd,
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _openAzhaiPartnerForAd() async {
+    final driverId = _driverId ?? '';
+    try {
+      final uri = Uri.parse('azhai://watch-ad?driverId=$driverId');
+      final launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
+      if (!launched && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Azhai Partner ஆப் திறக்க முடியவில்லை. நிறுவியுள்ளீர்களா என சரிபார்க்கவும்.'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } catch (e) {
+      debugPrint('[AD] Cannot open Azhai Partner: $e');
+    }
+  }
+
+  void _initAdDeepLink() {
+    try {
+      final appLinks = AppLinks();
+      appLinks.uriLinkStream.listen((uri) {
+        debugPrint('[AutoClicker DeepLink] Received: $uri');
+        if (uri.scheme == 'autoclicker' && uri.host == 'ad-complete') {
+          _handleAdComplete();
+        }
+      });
+      appLinks.getInitialLink().then((uri) {
+        if (uri != null && uri.scheme == 'autoclicker' && uri.host == 'ad-complete') {
+          _handleAdComplete();
+        }
+      });
+    } catch (e) {
+      debugPrint('[AutoClicker DeepLink] Init error: $e');
+    }
+  }
+
+  void _handleAdComplete() {
+    if (!mounted) return;
+    setState(() {
+      _isAdRequired = false;
+      _adHoursRemaining = 6.0;
+    });
+
+    if (_isAdDialogShowing) {
+      Navigator.of(context, rootNavigator: true).pop();
+      _isAdDialogShowing = false;
+    }
+
+    _showAppNotification(
+      isTamil ? 'Auto Clicker - சலுகை கிடைத்தது! 🎬' : 'Auto Clicker - Reward Unlocked! 🎬',
+      isTamil
+          ? 'விளம்பரம் பார்த்ததற்கு நன்றி! இப்போது 6 மணி நேர பாஸ் கிடைத்தது. ஆப் பயன்பாட்டிற்கு தயார்.'
+          : 'Now you get reward! Now you can use the app (6 hours access).',
+      id: 1007,
+    );
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          isTamil
+              ? '✅ விளம்பரம் முடிந்தது! இப்போது AutoClicker பயன்படுத்தலாம்.'
+              : '✅ Ad watched! Now you can use the app (6 hrs access).',
+        ),
+        backgroundColor: const Color(0xFF00C853),
+        duration: const Duration(seconds: 4),
+      ),
+    );
   }
 
   void _handleLogout(String message) async {
@@ -280,7 +625,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       }
     }
     final prefs = await SharedPreferences.getInstance();
-    await prefs.clear();
+    await prefs.setBool('isLoggedIn', false);
+    await prefs.remove('driverId');
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message), backgroundColor: Colors.red));
     Navigator.pushAndRemoveUntil(
@@ -292,6 +638,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    _dailyLimitCountdownTimer?.cancel();
     _socket?.disconnect();
     _socket?.dispose();
     WidgetsBinding.instance.removeObserver(this);
@@ -310,6 +657,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       if (call.method == 'onRideAccepted') {
         final appName = call.arguments['appName'] as String? ?? '';
         final location = call.arguments['location'] as String? ?? '';
+        final double fare = (call.arguments['fare'] as num?)?.toDouble() ?? 0.0;
         setState(() {
           _totalAccepted++;
           _lastActivity = '✅ [$appName] Accepted → $location';
@@ -320,13 +668,26 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           http.post(
             Uri.parse('http://43.205.135.3:3000/api/update-clicker-trip'),
             headers: {'Content-Type': 'application/json'},
-            body: jsonEncode({'driver_id': _driverId}),
+            body: jsonEncode({
+              'driver_id': _driverId,
+              'fare': fare,
+              'app_version': _currentAppVersion,
+            }),
           ).then((response) {
             if (response.statusCode == 200) {
               final data = jsonDecode(response.body);
-              if (data['is_blocked'] == true) {
-                // If backend says blocked, fetch states again to trigger paywall
-                _loadAllStates();
+              final bool dailyActive = data['daily_limit_active'] ?? false;
+              final int dailyEnd = data['daily_limit_end_time'] ?? 0;
+              final int dailyTrips = data['daily_trip_count'] ?? 0;
+              final double dailyEarn = (data['daily_earnings'] as num?)?.toDouble() ?? 0.0;
+
+              setState(() {
+                _dailyTripCount = dailyTrips;
+                _dailyEarnings = dailyEarn;
+              });
+
+              if (dailyActive && dailyEnd > DateTime.now().millisecondsSinceEpoch) {
+                _handleDailyLimitTriggered(dailyEnd, dailyTrips, dailyEarn);
               }
             }
           }).catchError((e) {
@@ -385,50 +746,60 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   Future<void> _fetchAcceptedTripsFromDB() async {
     if (_driverId == null) return;
+    if (_currentAppVersion == '1.0.0' && gAppVersion != '1.0.0') {
+      _currentAppVersion = gAppVersion;
+    }
+    if (_deviceId == null || _deviceId!.isEmpty) {
+      final prefs = await SharedPreferences.getInstance();
+      _deviceId = prefs.getString('deviceId') ?? '';
+    }
     try {
       final response = await http.post(
         Uri.parse('http://43.205.135.3:3000/api/clicker-profile'),
         headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'driver_id': _driverId, 'device_id': _deviceId ?? ''}),
+        body: jsonEncode({
+          'driver_id': _driverId,
+          'device_id': _deviceId ?? '',
+          'app_version': _currentAppVersion,
+        }),
       );
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
         if (data['status'] == 'logout') {
-            _handleLogout(data['message'] ?? 'Logged in from another device.');
-            return;
-          }
-          if (data['status'] == 'success') {
+          _handleLogout(data['message'] ?? 'Logged in from another device.');
+          return;
+        }
+        if (data['status'] == 'success') {
           final acceptedTrips = data['profile']['acceptedTrips'] ?? 0;
           final hasPaid = data['profile']['hasPaidForClicker'] ?? false;
 
           if (data['profile']['isBlocked'] == true) {
-            if (acceptedTrips >= 20 && !hasPaid) {
-              // Paywall block
-              setState(() {
-                _totalAccepted = acceptedTrips;
-                _isAppPurchased = false;
-              });
-              _enforcePaywallIfNeeded();
-              return;
-            } else {
-              // Admin manual block
-              _handleLogout('Access Blocked by Admin. Please contact support.');
-              return;
-            }
+            _handleLogout('Access Blocked by Admin. Please contact support.');
+            return;
           }
+
+          final bool dailyActive = data['profile']['isDailyLimitActive'] ?? false;
+          final int dailyEnd = data['profile']['dailyLimitEndTime'] ?? 0;
+          final int dailyTrips = data['profile']['dailyTripCount'] ?? 0;
+          final double dailyEarn = (data['profile']['dailyEarnings'] as num?)?.toDouble() ?? 0.0;
 
           setState(() {
             _totalAccepted = acceptedTrips;
             _isAppPurchased = hasPaid;
+            _dailyTripCount = dailyTrips;
+            _dailyEarnings = dailyEarn;
           });
-          _enforcePaywallIfNeeded();
+
+          if (dailyActive && dailyEnd > DateTime.now().millisecondsSinceEpoch) {
+            _handleDailyLimitTriggered(dailyEnd, dailyTrips, dailyEarn);
+          }
         }
       }
     } catch (_) {}
   }
 
   void _enforcePaywallIfNeeded() {
-    if (_totalAccepted >= 20 && !_isAppPurchased) {
+    if (!_isAppPurchased) {
       for (final app in kApps) {
         if (_appEnabled[app.id] == true) {
           _setAppEnabled(app.id, false);
@@ -454,7 +825,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         const Text(
-                          'You have completed 20 accepted trips.\n\nPlease pay ₹100 via UPI to continue using AutoClicker.\n',
+                          'Your free trial has ended.\n\nPlease pay ₹100 via UPI to continue using AutoClicker.\n',
                           style: TextStyle(color: Colors.white70),
                           textAlign: TextAlign.center,
                         ),
@@ -531,6 +902,319 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     }
   }
 
+    // ── Version Check & Force Update ──────────────────────────────────────────
+
+  Future<void> _loadAppVersion() async {
+    try {
+      final info = await PackageInfo.fromPlatform();
+      if (mounted) {
+        setState(() {
+          _currentAppVersion = info.version;
+        });
+      } else {
+        _currentAppVersion = info.version;
+      }
+    } catch (_) {}
+
+    // Sync app version to backend via socket and HTTP
+    if (_driverId != null) {
+      if (_socket != null && _socket!.connected) {
+        _socket?.emit('identifyClicker', {
+          'driverId': _driverId,
+          'appVersion': _currentAppVersion,
+        });
+      }
+      _fetchAcceptedTripsFromDB();
+    }
+
+    _checkForUpdate();
+  }
+
+  Future<void> _checkForUpdate() async {
+    try {
+      final response = await http
+          .get(Uri.parse('http://43.205.135.3:3000/api/clicker-version'))
+          .timeout(const Duration(seconds: 8));
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        final latestVersion = data['latestVersion'] as String? ?? '1.0.0';
+        final apkUrl = data['apkUrl'] as String? ?? '';
+        if (_isVersionOlder(_currentAppVersion, latestVersion)) {
+          _showForceUpdateDialog(latestVersion, apkUrl);
+        }
+      }
+    } catch (e) {
+      debugPrint('Check update error: $e');
+    }
+  }
+
+  bool _isVersionOlder(String current, String latest) {
+    List<int> parse(String v) => v.split('.').map((s) => int.tryParse(s) ?? 0).toList();
+    final c = parse(current);
+    final l = parse(latest);
+    for (int i = 0; i < 3; i++) {
+      final cv = i < c.length ? c[i] : 0;
+      final lv = i < l.length ? l[i] : 0;
+      if (cv < lv) return true;
+      if (cv > lv) return false;
+    }
+    return false;
+  }
+
+  void _showForceUpdateDialog(String version, String apkUrl) {
+    if (!mounted || _isForceUpdateShowing) return;
+    _isForceUpdateShowing = true;
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) {
+        return WillPopScope(
+          onWillPop: () async => false,
+          child: AlertDialog(
+            backgroundColor: const Color(0xFF1E1E1E),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            title: Row(
+              children: [
+                const Icon(Icons.system_update, color: Colors.blueAccent, size: 28),
+                const SizedBox(width: 8),
+                Text(
+                  isTamil ? 'புதிய அப்டேட் தேவை!' : 'Update Required!',
+                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                ),
+              ],
+            ),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.cloud_download_outlined, color: Colors.blueAccent, size: 50),
+                const SizedBox(height: 12),
+                Text(
+                  'v$version',
+                  style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  isTamil
+                      ? 'தொடர்ந்து பயன்படுத்த புதிய பதிப்பிற்கு அப்டேட் செய்யவும்.'
+                      : 'Please update to the latest version to continue using AutoClicker.',
+                  style: const TextStyle(color: Colors.white70, fontSize: 13),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  isTamil ? 'தற்போதைய பதிப்பு: v$_currentAppVersion' : 'Current installed: v$_currentAppVersion',
+                  style: const TextStyle(color: Colors.white38, fontSize: 11),
+                ),
+              ],
+            ),
+            actions: [
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.blueAccent,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  ),
+                  icon: const Icon(Icons.download),
+                  label: Text(
+                    isTamil ? 'இப்போதே அப்டேட் செய்' : 'Update Now',
+                    style: const TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  onPressed: () async {
+                    if (apkUrl.isNotEmpty) {
+                      try {
+                        final uri = Uri.parse(apkUrl);
+                        final launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
+                        if (!launched) {
+                          await launchUrl(uri, mode: LaunchMode.platformDefault);
+                        }
+                      } catch (e) {
+                        debugPrint('Could not launch apkUrl: $e');
+                      }
+                    }
+                  },
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  // ── Daily Limit Cooldown Handlers ──────────────────────────────────────────
+
+  void _handleDailyLimitTriggered(int endTime, int trips, double earnings) {
+    for (final app in kApps) {
+      if (_appEnabled[app.id] == true) {
+        _setAppEnabled(app.id, false);
+      }
+    }
+
+    setState(() {
+      _isDailyLimitActive = true;
+      _dailyLimitEndTime = endTime;
+      _dailyTripCount = trips;
+      _dailyEarnings = earnings;
+    });
+
+    _startDailyCountdownTimer();
+    _scheduleBlockEndNotification(endTime);
+
+    if (!_isDailyLimitDialogShowing && mounted) {
+      _showDailyLimitDialog();
+    }
+  }
+
+  void _startDailyCountdownTimer() {
+    _dailyLimitCountdownTimer?.cancel();
+    _dailyLimitCountdownTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      final remaining = _dailyLimitEndTime - DateTime.now().millisecondsSinceEpoch;
+      if (remaining <= 0) {
+        timer.cancel();
+        _cancelBlockEndNotification();
+        setState(() {
+          _isDailyLimitActive = false;
+          _dailyLimitEndTime = 0;
+        });
+        if (_isDailyLimitDialogShowing) {
+          Navigator.of(context, rootNavigator: true).pop();
+          _isDailyLimitDialogShowing = false;
+        }
+        _showAppNotification(
+          isTamil ? 'Auto Clicker - 12 மணி நேர தடை முடிந்தது!' : 'Auto Clicker - 12hr Block Ended',
+          isTamil
+              ? 'உங்கள் தடை நீக்கப்பட்டது! இப்போது நீங்கள் ஆப்பை பயன்படுத்தலாம்.'
+              : 'Your block is removed and you can use the app now.',
+          id: 1005,
+        );
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('✅ 12-hour limit completed! You can now turn ON apps.'),
+              backgroundColor: Colors.green,
+            ),
+          );
+        }
+      } else {
+        if (mounted) setState(() {});
+      }
+    });
+  }
+
+  void _showDailyLimitDialog() {
+    if (!mounted || _isDailyLimitDialogShowing) return;
+    _isDailyLimitDialogShowing = true;
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) {
+        return WillPopScope(
+          onWillPop: () async => false,
+          child: StatefulBuilder(
+            builder: (ctx, setDialogState) {
+              final remaining = _dailyLimitEndTime - DateTime.now().millisecondsSinceEpoch;
+              if (remaining <= 0) {
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  if (Navigator.canPop(ctx)) Navigator.pop(ctx);
+                });
+                return const SizedBox.shrink();
+              }
+
+              final hours = remaining ~/ 3600000;
+              final minutes = (remaining % 3600000) ~/ 60000;
+              final seconds = (remaining % 60000) ~/ 1000;
+
+              Timer(const Duration(seconds: 1), () {
+                if (ctx.mounted) setDialogState(() {});
+              });
+
+              final timeFormatted =
+                  '${hours.toString().padLeft(2, '0')}:${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';
+
+              return AlertDialog(
+                backgroundColor: const Color(0xFF1E1E1E),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                title: Row(
+                  children: [
+                    const Icon(Icons.timer_off_outlined, color: Colors.redAccent, size: 28),
+                    const SizedBox(width: 8),
+                    Text(
+                      isTamil ? 'இன்றைய வரம்பு முடிந்தது!' : "Today's Limit Reached!",
+                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16),
+                    ),
+                  ],
+                ),
+                content: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      isTamil
+                          ? 'இன்று நீங்கள் $_dailyTripCount சவாரிகள் / ₹${_dailyEarnings.toStringAsFixed(0)} ஈட்டியுள்ளீர்கள்.\n(வரம்பு: 6 சவாரிகள் அல்லது ₹1000)'
+                          : 'You have completed $_dailyTripCount trips / ₹${_dailyEarnings.toStringAsFixed(0)} today.\n(Limit: 6 trips or ₹1000)',
+                      style: const TextStyle(color: Colors.white70, fontSize: 13),
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 16),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+                      decoration: BoxDecoration(
+                        color: Colors.red.withOpacity(0.15),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: Colors.redAccent.withOpacity(0.4)),
+                      ),
+                      child: Column(
+                        children: [
+                          Text(
+                            isTamil ? 'மீண்டும் இயக்க மீதமுள்ள நேரம்:' : 'Time remaining to unlock:',
+                            style: const TextStyle(color: Colors.white54, fontSize: 11),
+                          ),
+                          const SizedBox(height: 6),
+                          Text(
+                            timeFormatted,
+                            style: const TextStyle(
+                              color: Colors.redAccent,
+                              fontSize: 32,
+                              fontWeight: FontWeight.bold,
+                              fontFeatures: [FontFeature.tabularFigures()],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      isTamil
+                          ? '12 மணி நேரம் முடியும் வரை ஆட்டோ கிளிக்கர் இயங்காது.'
+                          : 'AutoClicker is disabled for 12 hours. Please wait.',
+                      style: const TextStyle(color: Colors.white38, fontSize: 11),
+                      textAlign: TextAlign.center,
+                    ),
+                  ],
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () {
+                      _isDailyLimitDialogShowing = false;
+                      Navigator.pop(ctx);
+                    },
+                    child: const Text('OK', style: TextStyle(color: Color(0xFFFFCC00), fontWeight: FontWeight.bold)),
+                  ),
+                ],
+              );
+            },
+          ),
+        );
+      },
+    ).then((_) {
+      _isDailyLimitDialogShowing = false;
+    });
+  }
+
   void _unlockApp({bool showDialogMessage = false}) async {
     setState(() {
       _isAppPurchased = true;
@@ -589,6 +1273,29 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       if (mounted) setState(() => _serviceActive = result);
     } catch (_) {
       if (mounted) setState(() => _serviceActive = false);
+    }
+  }
+
+  Future<void> _disableAccessibilityForBanking() async {
+    try {
+      await _channel.invokeMethod('disableAccessibility');
+      if (mounted) {
+        setState(() => _serviceActive = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              isTamil
+                  ? '🏦 Banking Mode இயக்கப்பட்டது!\nAccessibility நிறுத்தப்பட்டது. இப்போது GPay, PhonePe பயன்படுத்தலாம்.'
+                  : '🏦 Banking Mode Enabled!\nAccessibility disabled. You can now use banking apps safely.',
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
+            backgroundColor: const Color(0xFF00C853),
+            duration: const Duration(seconds: 4),
+          ),
+        );
+      }
+    } catch (e) {
+      debugPrint('Error disabling accessibility: $e');
     }
   }
 
@@ -814,7 +1521,15 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
             onPressed: () {
               Navigator.push(
                 context,
-                MaterialPageRoute(builder: (context) => const ProfilePage()),
+                MaterialPageRoute(
+                  builder: (context) => ProfilePage(
+                    initialDriverId: _driverId,
+                    initialIsDailyLimitActive: _isDailyLimitActive,
+                    initialDailyLimitEndTime: _dailyLimitEndTime,
+                    initialIsAdRequired: _isAdRequired,
+                    initialAdHoursRemaining: _adHoursRemaining,
+                  ),
+                ),
               );
             },
             icon: const Icon(Icons.person, color: Color(0xFFFFCC00)),
@@ -831,6 +1546,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
               _buildLanguageSelector(),
               const SizedBox(height: 12),
               _buildHeader(),
+              const SizedBox(height: 16),
+              _buildBankingModeCard(),
               const SizedBox(height: 16),
               _buildHUDToggleCard(),
               const SizedBox(height: 16),
@@ -965,6 +1682,99 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   }
 
   // ── HUD Toggle Card ────────────────────────────────────────────────────────
+
+
+  Widget _buildBankingModeCard() {
+    if (!_serviceActive) {
+      return Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: const Color(0xFF142414),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: const Color(0xFF1B5E20)),
+        ),
+        child: Row(
+          children: [
+            const Icon(Icons.account_balance, color: Color(0xFF4CAF50), size: 24),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    isTamil ? '🏦 பேங்கிங் மோட் தயார் (GPay / PhonePe)' : '🏦 Banking Mode Ready (GPay / PhonePe)',
+                    style: const TextStyle(color: Color(0xFF4CAF50), fontWeight: FontWeight.bold, fontSize: 13),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    isTamil
+                        ? 'Accessibility நிறுத்தப்பட்டுள்ளது. வங்கி செயலிகளை தடையின்றி பயன்படுத்தலாம்.'
+                        : 'Accessibility is turned off. Banking apps will open without warnings.',
+                    style: const TextStyle(color: Colors.white70, fontSize: 11),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1A1A1A),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFF2E3A4E)),
+      ),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: const Color(0xFF2196F3).withValues(alpha: 0.15),
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(Icons.account_balance, color: Color(0xFF2196F3), size: 22),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  isTamil ? 'வங்கி செயலிகள் (Banking Mode)' : 'Banking Apps (GPay / PhonePe)',
+                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  isTamil ? 'GPay/PhonePe பயன்படுத்த 1-கிளிக்கில் ஆஃப் செய்யலாம்' : '1-tap disable before opening bank apps',
+                  style: const TextStyle(color: Colors.white60, fontSize: 11),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          ElevatedButton.icon(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF1E3A5F),
+              foregroundColor: const Color(0xFF64B5F6),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            ),
+            icon: const Icon(Icons.power_settings_new, size: 16),
+            label: Text(
+              isTamil ? 'ஆஃப் செய்' : 'Turn Off',
+              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+            ),
+            onPressed: _disableAccessibilityForBanking,
+          ),
+        ],
+      ),
+    );
+  }
 
   Widget _buildHUDToggleCard() {
     return Container(
@@ -1141,9 +1951,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
               Expanded(
                 child: Column(
                   children: [
-                    Text('₹${_totalEarnings.toStringAsFixed(0)}',
+                    Text('₹${_dailyEarnings.toStringAsFixed(0)}',
                         style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: Colors.greenAccent)),
-                    Text(t('Earnings'), style: TextStyle(fontSize: 11, color: Color(0xFFB3B3B3))),
+                    Text(isTamil ? 'இன்றைய வருமானம்' : "Today's Earning", style: const TextStyle(fontSize: 11, color: Color(0xFFB3B3B3))),
+                    Text('Total: ₹${_totalEarnings.toStringAsFixed(0)}', style: const TextStyle(fontSize: 9, color: Colors.white38)),
                   ],
                 ),
               ),
@@ -1275,9 +2086,20 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                 Switch(
                   value: isEnabled,
                   onChanged: !app.isAvailable ? null : (val) {
-                    if (val && !_serviceActive) {
-                      _showSnack('First enable Accessibility Service!');
-                      return;
+                    if (val) {
+                      if (_isAdRequired) {
+                        _showWatchAdDialog(_adHoursRemaining);
+                        return;
+                      }
+                      final now = DateTime.now().millisecondsSinceEpoch;
+                      if (_isDailyLimitActive && _dailyLimitEndTime > now) {
+                        _showDailyLimitDialog();
+                        return; // STRICT: Does NOT turn on
+                      }
+                      if (!_serviceActive) {
+                        _showSnack('First enable Accessibility Service!');
+                        return;
+                      }
                     }
                     _setAppEnabled(app.id, val);
                   },
@@ -1544,7 +2366,6 @@ class _RideHistoryPageState extends State<RideHistoryPage> {
   bool _loading = true;
   DataFilter _currentFilter = DataFilter.all;
 
-
   @override
   void initState() {
     super.initState();
@@ -1556,7 +2377,6 @@ class _RideHistoryPageState extends State<RideHistoryPage> {
       final String result = await _channel.invokeMethod('getRideHistory') ?? '[]';
       setState(() {
         _history = jsonDecode(result);
-        // Reverse so newest is at the top
         _history = _history.reversed.toList();
         _loading = false;
       });
@@ -1567,296 +2387,435 @@ class _RideHistoryPageState extends State<RideHistoryPage> {
     }
   }
 
-  Widget _buildList(String? filterApp) {
-    final filtered = _history.where((item) {
-      if (filterApp != null && item['appName'] != filterApp) return false;
-      
-      final double fare = (item['fare'] ?? -1.0).toDouble();
-      final double pickupKm = (item['pickupKm'] ?? -1.0).toDouble();
-      final double dropKm = (item['dropKm'] ?? -1.0).toDouble();
-      
-      final bool hasData = fare > 0 || pickupKm >= 0 || dropKm >= 0;
-      
-      if (_currentFilter == DataFilter.withData && !hasData) return false;
-      if (_currentFilter == DataFilter.withoutData && hasData) return false;
-      
+  Future<void> _confirmClearHistory() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E1E),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Row(
+          children: [
+            const Icon(Icons.delete_sweep, color: Colors.redAccent),
+            const SizedBox(width: 8),
+            Text(
+              isTamil ? 'வரலாற்றை அழிக்கவா?' : 'Clear History?',
+              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+            ),
+          ],
+        ),
+        content: Text(
+          isTamil
+              ? 'அனைத்து சவாரி வரலாறு மற்றும் வருமான விவரங்கள் அழிக்கப்படும். தொடரவா?'
+              : 'All saved ride history and earnings will be cleared. Continue?',
+          style: const TextStyle(color: Colors.white70),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: Text(isTamil ? 'ரத்து' : 'Cancel', style: const TextStyle(color: Colors.white54)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.redAccent,
+              foregroundColor: Colors.white,
+            ),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: Text(isTamil ? 'அழி' : 'Clear', style: const TextStyle(fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true) {
+      try {
+        await _channel.invokeMethod('clearRideHistory');
+        setState(() {
+          _history = [];
+        });
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(isTamil ? 'சவாரி வரலாறு அழிக்கப்பட்டது!' : 'Ride history cleared successfully!'),
+              backgroundColor: Colors.green,
+            ),
+          );
+        }
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Failed: $e'), backgroundColor: Colors.red),
+          );
+        }
+      }
+    }
+  }
+
+  Widget _buildSummaryCard(int trips, double earnings, String period) {
+    String label = period;
+    if (period == 'daily') {
+      label = isTamil ? 'இன்று' : 'Today';
+    } else if (period == 'weekly') {
+      label = isTamil ? 'இந்த வாரம்' : 'This Week';
+    } else if (period == 'monthly') {
+      label = isTamil ? 'இந்த மாதம்' : 'This Month';
+    } else {
+      label = isTamil ? 'மொத்தம்' : 'All Time';
+    }
+
+    return Container(
+      margin: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1E1E1E),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFF2E2E2E)),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceAround,
+        children: [
+          Column(
+            children: [
+              Text(
+                '$trips',
+                style: const TextStyle(fontSize: 26, fontWeight: FontWeight.bold, color: Color(0xFFFFCC00)),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                '$label Trips',
+                style: const TextStyle(fontSize: 11, color: Colors.white54),
+              ),
+            ],
+          ),
+          Container(width: 1, height: 40, color: const Color(0xFF333333)),
+          Column(
+            children: [
+              Text(
+                '₹${earnings.toStringAsFixed(0)}',
+                style: const TextStyle(fontSize: 26, fontWeight: FontWeight.bold, color: Colors.greenAccent),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                '$label Earnings',
+                style: const TextStyle(fontSize: 11, color: Colors.white54),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPeriodList(String period) {
+    final now = DateTime.now();
+    final periodRides = _history.where((item) {
+      final dt = DateTime.fromMillisecondsSinceEpoch(item['timestamp'] ?? 0);
+      if (period == 'daily') {
+        return dt.year == now.year && dt.month == now.month && dt.day == now.day;
+      } else if (period == 'weekly') {
+        final weekAgo = now.subtract(const Duration(days: 7));
+        return dt.isAfter(weekAgo);
+      } else if (period == 'monthly') {
+        return dt.year == now.year && dt.month == now.month;
+      }
       return true;
     }).toList();
 
-    if (filtered.isEmpty) {
-      return const Center(
-        child: Text('No rides found', style: TextStyle(color: Colors.white54)),
-      );
-    }
+    final acceptedList = periodRides.where((r) => r['status'] == 'ACCEPTED').toList();
+    final int acceptedCount = acceptedList.length;
+    final double periodEarnings = acceptedList.fold(0.0, (sum, r) {
+      final double fare = (r['fare'] as num?)?.toDouble() ?? 0.0;
+      final double tip = (r['tip'] as num?)?.toDouble() ?? 0.0;
+      return sum + (fare > 0 ? fare : 0) + (tip > 0 ? tip : 0);
+    });
 
-    return ListView.builder(
-      itemCount: filtered.length,
-      itemBuilder: (context, index) {
-        final item = filtered[index];
-        final bool isAccepted = item['status'] == 'ACCEPTED';
-        final dt = DateTime.fromMillisecondsSinceEpoch(item['timestamp'] ?? 0);
-        final timeStr = '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
+    final filtered = periodRides.where((item) {
+      final double fare = (item['fare'] ?? -1.0).toDouble();
+      final double pickupKm = (item['pickupKm'] ?? -1.0).toDouble();
+      final double dropKm = (item['dropKm'] ?? -1.0).toDouble();
+      final bool hasData = fare > 0 || pickupKm >= 0 || dropKm >= 0;
 
-        final appInfo = kApps.firstWhere(
-          (a) => a.name == item['appName'],
-          orElse: () => const AppInfo(
-            id: 'unknown',
-            name: 'Unknown',
-            emoji: '❓',
-            primaryColor: Colors.grey,
-            cardColor: Colors.black,
-            acceptButtonName: '',
-          ),
-        );
+      if (_currentFilter == DataFilter.withData && !hasData) return false;
+      if (_currentFilter == DataFilter.withoutData && hasData) return false;
 
-        // Real Data Extraction
-        final double fare = (item['fare'] ?? -1.0).toDouble();
-        final String priceStr = fare >= 0 ? '₹${fare.toStringAsFixed(0)}' : 'Data not received';
-        
-        final double tip = (item['tip'] ?? -1.0).toDouble();
-        final String tipStr = tip > 0 ? '+ ₹${tip.toStringAsFixed(0)} Tip' : '';
-        
-        final double pickupKm = (item['pickupKm'] ?? -1.0).toDouble();
-        final String pickupKmStr = pickupKm >= 0 ? '${pickupKm.toStringAsFixed(1)} km' : 'N/A';
-        
-        final double dropKm = (item['dropKm'] ?? -1.0).toDouble();
-        final String dropKmStr = dropKm >= 0 ? '${dropKm.toStringAsFixed(1)} km' : 'N/A';
-        
-        final String rawPickupLoc = (item['pickupLocation'] ?? '').toString().trim();
-        final String pickupLocation = rawPickupLoc.isNotEmpty ? rawPickupLoc : 'Data not received';
-        
-        final String rawDropLoc = (item['dropLocation'] ?? '').toString().trim();
-        // Fallback to 'location' if dropLocation wasn't extracted (for backward compatibility)
-        final String fallbackLoc = (item['location'] ?? '').toString().split('(').first.trim();
-        final String dropLocation = rawDropLoc.isNotEmpty ? rawDropLoc : (fallbackLoc.isNotEmpty ? fallbackLoc : 'Data not received');
+      return true;
+    }).toList();
 
-        return Container(
-          margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-          padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(16),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(0.1),
-                blurRadius: 10,
-                offset: const Offset(0, 4),
-              )
-            ],
-            border: Border.all(
-              color: isAccepted ? appInfo.primaryColor : Colors.grey.shade300,
-              width: isAccepted ? 2 : 1,
+    return Column(
+      children: [
+        _buildSummaryCard(acceptedCount, periodEarnings, period),
+        Expanded(
+          child: filtered.isEmpty
+              ? Center(
+                  child: Text(
+                    isTamil ? 'சவாரிகள் எதுவும் இல்லை' : 'No rides found',
+                    style: const TextStyle(color: Colors.white54),
+                  ),
+                )
+              : ListView.builder(
+                  itemCount: filtered.length,
+                  itemBuilder: (context, index) => _buildRideCard(filtered[index]),
+                ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildRideCard(dynamic item) {
+    final bool isAccepted = item['status'] == 'ACCEPTED';
+    final dt = DateTime.fromMillisecondsSinceEpoch(item['timestamp'] ?? 0);
+    final timeStr = '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
+
+    final appInfo = kApps.firstWhere(
+      (a) => a.name == item['appName'],
+      orElse: () => const AppInfo(
+        id: 'unknown',
+        name: 'Unknown',
+        emoji: '❓',
+        primaryColor: Colors.grey,
+        cardColor: Colors.black,
+        acceptButtonName: '',
+      ),
+    );
+
+    final double fare = (item['fare'] ?? -1.0).toDouble();
+    final String priceStr = fare >= 0 ? '₹${fare.toStringAsFixed(0)}' : 'Data not received';
+
+    final double tip = (item['tip'] ?? -1.0).toDouble();
+    final String tipStr = tip > 0 ? '+ ₹${tip.toStringAsFixed(0)} Tip' : '';
+
+    final double pickupKm = (item['pickupKm'] ?? -1.0).toDouble();
+    final String pickupKmStr = pickupKm >= 0 ? '${pickupKm.toStringAsFixed(1)} km' : 'N/A';
+
+    final double dropKm = (item['dropKm'] ?? -1.0).toDouble();
+    final String dropKmStr = dropKm >= 0 ? '${dropKm.toStringAsFixed(1)} km' : 'N/A';
+
+    final String rawPickupLoc = (item['pickupLocation'] ?? '').toString().trim();
+    final String pickupLocation = rawPickupLoc.isNotEmpty ? rawPickupLoc : 'Data not received';
+
+    final String rawDropLoc = (item['dropLocation'] ?? '').toString().trim();
+    final String fallbackLoc = (item['location'] ?? '').toString().split('(').first.trim();
+    final String dropLocation = rawDropLoc.isNotEmpty ? rawDropLoc : (fallbackLoc.isNotEmpty ? fallbackLoc : 'Data not received');
+
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.1),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          )
+        ],
+        border: Border.all(
+          color: isAccepted ? appInfo.primaryColor : Colors.grey.shade300,
+          width: isAccepted ? 2 : 1,
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF0F0F5),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(appInfo.emoji, style: const TextStyle(fontSize: 12)),
+                const SizedBox(width: 6),
+                Text(
+                  appInfo.name,
+                  style: const TextStyle(
+                    color: Colors.black87,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
             ),
           ),
-          child: Column(
+          const SizedBox(height: 12),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.baseline,
+            textBaseline: TextBaseline.alphabetic,
+            children: [
+              Text(
+                priceStr,
+                style: TextStyle(
+                  color: fare >= 0 ? const Color(0xFF1E2026) : Colors.grey.shade500,
+                  fontSize: fare >= 0 ? 32 : 18,
+                  fontWeight: fare >= 0 ? FontWeight.w900 : FontWeight.w600,
+                  letterSpacing: -1,
+                ),
+              ),
+              if (tipStr.isNotEmpty) ...[
+                const SizedBox(width: 8),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: Colors.green.shade50,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.green.shade200),
+                  ),
+                  child: Text(
+                    tipStr,
+                    style: TextStyle(
+                      color: Colors.green.shade700,
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
+          const SizedBox(height: 16),
+          Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // Top Chip
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFF0F0F5),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(appInfo.emoji, style: const TextStyle(fontSize: 12)),
-                    const SizedBox(width: 6),
-                    Text(
-                      appInfo.name,
-                      style: const TextStyle(
-                        color: Colors.black87,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 12),
-              
-              // Price & Tip (Real Data)
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.baseline,
-                textBaseline: TextBaseline.alphabetic,
+              Column(
                 children: [
-                  Text(
-                    priceStr,
-                    style: TextStyle(
-                      color: fare >= 0 ? const Color(0xFF1E2026) : Colors.grey.shade500,
-                      fontSize: fare >= 0 ? 32 : 18,
-                      fontWeight: fare >= 0 ? FontWeight.w900 : FontWeight.w600,
-                      letterSpacing: -1,
-                    ),
-                  ),
-                  if (tipStr.isNotEmpty) ...[
-                    const SizedBox(width: 8),
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                      decoration: BoxDecoration(
-                        color: Colors.green.shade50,
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: Colors.green.shade200),
-                      ),
-                      child: Text(
-                        tipStr,
-                        style: TextStyle(
-                          color: Colors.green.shade700,
-                          fontSize: 12,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    ),
-                  ],
-                ],
-              ),
-              const SizedBox(height: 16),
-              
-              // Timeline Section
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  // Timeline graphic
-                  Column(
-                    children: [
-                      const SizedBox(height: 4),
-                      Container(
-                        width: 10,
-                        height: 10,
-                        decoration: const BoxDecoration(
-                          color: Color(0xFF1E2026),
-                          shape: BoxShape.circle,
-                        ),
-                      ),
-                      Container(
-                        width: 1.5,
-                        height: 50,
-                        color: const Color(0xFF1E2026),
-                      ),
-                      const Icon(Icons.arrow_drop_down, color: Color(0xFF1E2026), size: 18),
-                    ],
-                  ),
-                  const SizedBox(width: 12),
-                  // Timeline content
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        // Pickup
-                        Text(
-                          pickupKmStr,
-                          style: const TextStyle(
-                            color: Color(0xFF1E2026),
-                            fontSize: 18,
-                            fontWeight: FontWeight.w800,
-                          ),
-                        ),
-                        const SizedBox(height: 2),
-                        Text(
-                          pickupLocation,
-                          style: TextStyle(
-                            color: pickupLocation == 'Data not received' ? Colors.red.shade400 : Colors.grey.shade600,
-                            fontSize: 13,
-                            height: 1.4,
-                          ),
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        const SizedBox(height: 16),
-                        // Drop
-                        Text(
-                          dropKmStr,
-                          style: const TextStyle(
-                            color: Color(0xFF1E2026),
-                            fontSize: 18,
-                            fontWeight: FontWeight.w800,
-                          ),
-                        ),
-                        const SizedBox(height: 2),
-                        Text(
-                          dropLocation,
-                          style: TextStyle(
-                            color: dropLocation == 'Data not received' ? Colors.red.shade400 : Colors.grey.shade600,
-                            fontSize: 13,
-                            height: 1.4,
-                          ),
-                          maxLines: 3,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 20),
-              
-              // Bottom Action Row
-              Row(
-                children: [
-                  // Minus Button
+                  const SizedBox(height: 4),
                   Container(
-                    width: 48,
-                    height: 48,
-                    decoration: BoxDecoration(
+                    width: 10,
+                    height: 10,
+                    decoration: const BoxDecoration(
+                      color: Color(0xFF1E2026),
                       shape: BoxShape.circle,
-                      border: Border.all(color: Colors.grey.shade300, width: 2),
-                    ),
-                    child: const Icon(Icons.remove, color: Color(0xFF1E2026)),
-                  ),
-                  const SizedBox(width: 12),
-                  // Accept/Status Button
-                  Expanded(
-                    child: Container(
-                      height: 48,
-                      decoration: BoxDecoration(
-                        color: isAccepted ? const Color(0xFFFFCC00) : Colors.grey.shade200,
-                        borderRadius: BorderRadius.circular(24),
-                      ),
-                      alignment: Alignment.center,
-                      child: Text(
-                        isAccepted ? 'ACCEPTED' : (item['status'] ?? 'DETECTED'),
-                        style: TextStyle(
-                          color: isAccepted ? const Color(0xFF1E2026) : Colors.grey.shade600,
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
                     ),
                   ),
+                  Container(
+                    width: 1.5,
+                    height: 50,
+                    color: const Color(0xFF1E2026),
+                  ),
+                  const Icon(Icons.arrow_drop_down, color: Color(0xFF1E2026), size: 18),
                 ],
               ),
-              const SizedBox(height: 8),
-              Align(
-                alignment: Alignment.centerRight,
-                child: Text(
-                  '$timeStr • ${item['appName']}',
-                  style: TextStyle(color: Colors.grey.shade500, fontSize: 10),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      pickupKmStr,
+                      style: const TextStyle(
+                        color: Color(0xFF1E2026),
+                        fontSize: 18,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      pickupLocation,
+                      style: TextStyle(
+                        color: pickupLocation == 'Data not received' ? Colors.red.shade400 : Colors.grey.shade600,
+                        fontSize: 13,
+                        height: 1.4,
+                      ),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 16),
+                    Text(
+                      dropKmStr,
+                      style: const TextStyle(
+                        color: Color(0xFF1E2026),
+                        fontSize: 18,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      dropLocation,
+                      style: TextStyle(
+                        color: dropLocation == 'Data not received' ? Colors.red.shade400 : Colors.grey.shade600,
+                        fontSize: 13,
+                        height: 1.4,
+                      ),
+                      maxLines: 3,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
                 ),
               ),
             ],
           ),
-        );
-      },
+          const SizedBox(height: 20),
+          Row(
+            children: [
+              Container(
+                width: 48,
+                height: 48,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  border: Border.all(color: Colors.grey.shade300, width: 2),
+                ),
+                child: const Icon(Icons.remove, color: Color(0xFF1E2026)),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Container(
+                  height: 48,
+                  decoration: BoxDecoration(
+                    color: isAccepted ? const Color(0xFFFFCC00) : Colors.grey.shade200,
+                    borderRadius: BorderRadius.circular(24),
+                  ),
+                  alignment: Alignment.center,
+                  child: Text(
+                    isAccepted ? 'ACCEPTED' : (item['status'] ?? 'DETECTED'),
+                    style: TextStyle(
+                      color: isAccepted ? const Color(0xFF1E2026) : Colors.grey.shade600,
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Align(
+            alignment: Alignment.centerRight,
+            child: Text(
+              '$timeStr • ${item['appName']}',
+              style: TextStyle(color: Colors.grey.shade500, fontSize: 10),
+            ),
+          ),
+        ],
+      ),
     );
   }
 
   @override
   Widget build(BuildContext context) {
     return DefaultTabController(
-      length: kApps.length + 1, // All + each app
+      length: 4,
       child: Scaffold(
         appBar: AppBar(
-          title: Text(t('Ride History'), style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+          title: Text(t('Ride History'), style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
           backgroundColor: const Color(0xFF1A1A1A),
+          actions: [
+            IconButton(
+              icon: const Icon(Icons.delete_sweep_outlined, color: Colors.redAccent),
+              tooltip: isTamil ? 'வரலாற்றை அழி' : 'Clear History',
+              onPressed: _confirmClearHistory,
+            ),
+          ],
           bottom: TabBar(
-            isScrollable: true,
             indicatorColor: const Color(0xFFFFCC00),
             labelColor: const Color(0xFFFFCC00),
             unselectedLabelColor: Colors.white54,
             tabs: [
-              const Tab(text: 'All'),
-              ...kApps.map((app) => Tab(text: app.name)),
+              Tab(text: isTamil ? 'இன்று' : 'Daily'),
+              Tab(text: isTamil ? 'வாரம்' : 'Weekly'),
+              Tab(text: isTamil ? 'மாதம்' : 'Monthly'),
+              Tab(text: isTamil ? 'அனைத்தும்' : 'All Rides'),
             ],
           ),
         ),
@@ -1865,7 +2824,7 @@ class _RideHistoryPageState extends State<RideHistoryPage> {
             : Column(
                 children: [
                   Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
+                    padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
                     child: SizedBox(
                       width: double.infinity,
                       child: SegmentedButton<DataFilter>(
@@ -1894,8 +2853,10 @@ class _RideHistoryPageState extends State<RideHistoryPage> {
                   Expanded(
                     child: TabBarView(
                       children: [
-                        _buildList(null),
-                        ...kApps.map((app) => _buildList(app.name)),
+                        _buildPeriodList('daily'),
+                        _buildPeriodList('weekly'),
+                        _buildPeriodList('monthly'),
+                        _buildPeriodList('all'),
                       ],
                     ),
                   ),

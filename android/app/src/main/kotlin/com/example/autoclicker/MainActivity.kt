@@ -2,6 +2,12 @@ package com.example.autoclicker
 
 import android.content.Context
 import android.content.Intent
+import android.app.AlarmManager
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.os.Build
+import androidx.core.app.NotificationCompat
 import android.provider.Settings
 import android.view.accessibility.AccessibilityManager
 import io.flutter.embedding.android.FlutterActivity
@@ -75,6 +81,11 @@ class MainActivity : FlutterActivity() {
                     "openAccessibilitySettings" -> {
                         startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
                         result.success(null)
+                    }
+
+                    "disableAccessibility" -> {
+                        RapidoAutoClickService.instance?.disableForBanking(this)
+                        result.success(true)
                     }
 
                     "showCropBox" -> {
@@ -201,14 +212,45 @@ class MainActivity : FlutterActivity() {
                         result.success(historyStr)
                     }
 
+                    // ── Clear ride history ────────────────────────────
+                    "clearRideHistory" -> {
+                        prefs.edit()
+                            .remove("ride_history")
+                            .apply()
+                        RapidoAutoClickService.instance?.clearHistory()
+                        result.success(null)
+                    }
+
+                                        // ── Status Bar Notification ─────────────────────────
+                    "showNotification" -> {
+                        val title = call.argument<String>("title") ?: "Auto Clicker"
+                        val message = call.argument<String>("message") ?: ""
+                        val notifId = call.argument<Int>("id") ?: 1002
+                        showAppNotification(title, message, notifId)
+                        result.success(true)
+                    }
+
+                    "scheduleBlockEndNotification" -> {
+                        val triggerAt = (call.argument<Number>("triggerAtMillis")?.toLong()) ?: 0L
+                        val title = call.argument<String>("title") ?: "Auto Clicker - 12hr Block Ended"
+                        val message = call.argument<String>("message") ?: "Your block is removed and you can use the app now!"
+                        scheduleBlockEndNotification(triggerAt, title, message)
+                        result.success(true)
+                    }
+
+                    "cancelBlockEndNotification" -> {
+                        cancelBlockEndNotification()
+                        result.success(true)
+                    }
+
                     else -> result.notImplemented()
                 }
             }
 
-        RapidoAutoClickService.onRideAccepted = { appName, location ->
+        RapidoAutoClickService.onRideAccepted = { appName, location, fare ->
             runOnUiThread {
                 MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
-                    .invokeMethod("onRideAccepted", mapOf("appName" to appName, "location" to location))
+                    .invokeMethod("onRideAccepted", mapOf("appName" to appName, "location" to location, "fare" to fare))
             }
         }
         RapidoAutoClickService.onRideSkipped = { appName, location ->
@@ -239,9 +281,81 @@ class MainActivity : FlutterActivity() {
         ) ?: return false
         return enabled.contains("RapidoAutoClickService", ignoreCase = true)
     }
+
+    private fun showAppNotification(title: String, message: String, notifId: Int) {
+        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        val channelId = BlockNotificationReceiver.CHANNEL_ID
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                channelId,
+                BlockNotificationReceiver.CHANNEL_NAME,
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "Alerts for block removal and rewards"
+                enableVibration(true)
+                enableLights(true)
+            }
+            nm.createNotificationChannel(channel)
+        }
+
+        val launchIntent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            this,
+            notifId,
+            launchIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val notification = NotificationCompat.Builder(this, channelId)
+            .setSmallIcon(R.mipmap.ic_launcher)
+            .setContentTitle(title)
+            .setContentText(message)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(message))
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setDefaults(NotificationCompat.DEFAULT_ALL)
+            .setAutoCancel(true)
+            .setContentIntent(pendingIntent)
+            .build()
+
+        nm.notify(notifId, notification)
+    }
+
+    private fun scheduleBlockEndNotification(triggerAtMillis: Long, title: String, message: String) {
+        if (triggerAtMillis <= System.currentTimeMillis()) return
+        val intent = Intent(this, BlockNotificationReceiver::class.java).apply {
+            putExtra("title", title)
+            putExtra("message", message)
+            putExtra("id", BlockNotificationReceiver.NOTIFICATION_ID)
+        }
+        val pi = PendingIntent.getBroadcast(
+            this,
+            BlockNotificationReceiver.NOTIFICATION_ID,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val am = getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAtMillis, pi)
+            } else {
+                am.setExact(AlarmManager.RTC_WAKEUP, triggerAtMillis, pi)
+            }
+        } catch (e: SecurityException) {
+            am.set(AlarmManager.RTC_WAKEUP, triggerAtMillis, pi)
+        }
+    }
+
+    private fun cancelBlockEndNotification() {
+        val intent = Intent(this, BlockNotificationReceiver::class.java)
+        val pi = PendingIntent.getBroadcast(
+            this,
+            BlockNotificationReceiver.NOTIFICATION_ID,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val am = getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        am.cancel(pi)
+    }
 }
-
-
-
-
-

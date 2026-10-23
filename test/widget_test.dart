@@ -5,7 +5,7 @@ import 'package:autoclicker/main.dart';
 
 void main() {
   testWidgets('App smoke test', (WidgetTester tester) async {
-    await tester.pumpWidget(const RapidoAutoClickerApp());
+    await tester.pumpWidget(const RapidoAutoClickerApp(home: HomePage()));
     expect(find.text('Auto Clicker'), findsOneWidget);
   });
 }
