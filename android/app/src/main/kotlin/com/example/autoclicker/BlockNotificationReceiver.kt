@@ -34,6 +34,8 @@ class BlockNotificationReceiver : BroadcastReceiver() {
                 description = "Alerts for block removal and rewards"
                 enableVibration(true)
                 enableLights(true)
+                lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
+                setBypassDnd(true)
             }
             nm.createNotificationChannel(channel)
         }
@@ -54,12 +56,15 @@ class BlockNotificationReceiver : BroadcastReceiver() {
             .setContentTitle(title)
             .setContentText(message)
             .setStyle(NotificationCompat.BigTextStyle().bigText(message))
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setPriority(NotificationCompat.PRIORITY_MAX)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setDefaults(NotificationCompat.DEFAULT_ALL)
             .setAutoCancel(true)
             .setContentIntent(pendingIntent)
             .build()
 
-        nm.notify(notifId, notification)
+        try {
+            nm.notify(notifId, notification)
+        } catch (_: Exception) {}
     }
 }
