@@ -5,23 +5,39 @@ Total Lines: 1657
 Total Bytes: 64447
 Showing lines 1 to 800
 The following code has been modified to include a line number before every line, in the format: <line_number>: <original_line>. Please note that any changes targeting the original code should remove the line number, colon, and leading space.
-1: import 'dart:convert';
-2: import 'dart:async';
-3: import 'package:flutter/material.dart';
-4: import 'package:flutter/services.dart';
-5: import 'package:shared_preferences/shared_preferences.dart';
-6: import 'package:http/http.dart' as http;
-7: import 'package:socket_io_client/socket_io_client.dart' as IO;
+1: import 'dart:convert';
+
+2: import 'dart:async';
+
+3: import 'package:flutter/material.dart';
+
+4: import 'package:flutter/services.dart';
+
+5: import 'package:shared_preferences/shared_preferences.dart';
+
+6: import 'package:http/http.dart' as http;
+
+7: import 'package:socket_io_client/socket_io_client.dart' as IO;
+
 8: import 'login_page.dart';
-9: import 'profile_page.dart' as profile;
-10: 
-11: void main() async {
-12:   WidgetsFlutterBinding.ensureInitialized();
-13:   runApp(const RapidoAutoClickerApp());
-14: }
-15: 
-16: 
-17: // ─────────────────────────────────────────────────────────────────────────────
+9: import 'profile_page.dart' as profile;
+
+10: 
+
+11: void main() async {
+
+12:   WidgetsFlutterBinding.ensureInitialized();
+
+13:   runApp(const RapidoAutoClickerApp());
+
+14: }
+
+15: 
+
+16: 
+
+17: // ─────────────────────────────────────────────────────────────────────────────
+
 18: class SplashPage extends StatefulWidget {
 19:   const SplashPage({super.key});
 20:   @override
@@ -68,399 +84,792 @@ The following code has been modified to include a line number before every line,
 61:   }
 62: }
 63: 
-64: // App Root
-65: // ─────────────────────────────────────────────────────────────────────────────
-66: class RapidoAutoClickerApp extends StatelessWidget {
-67:   const RapidoAutoClickerApp({super.key});
-68: 
-69:   @override
-70:   Widget build(BuildContext context) {
-71:     return MaterialApp(
-72:       title: 'Auto Clicker',
-73:       debugShowCheckedModeBanner: false,
-74:       theme: ThemeData(
-75:         colorScheme: const ColorScheme.dark(
-76:           primary: Color(0xFFFFCC00),
-77:           onPrimary: Color(0xFF0F0F0F),
-78:           surface: Color(0xFF1E1E1E),
-79:           onSurface: Colors.white,
-80:         ),
-81:         scaffoldBackgroundColor: const Color(0xFF0F0F0F),
-82:         useMaterial3: true,
-83:       ),
-84:       home: const SplashPage(),
-85:     );
-86:   }
-87: }
-88: 
-89: // ─────────────────────────────────────────────────────────────────────────────
-90: // App Info Model
-91: // ─────────────────────────────────────────────────────────────────────────────
-92: class AppInfo {
-93:   final String id;
-94:   final String name;
-95:   final String emoji;
-96:   final Color primaryColor;
-97:   final Color cardColor;
-98:   final String acceptButtonName;
-99: 
-100:   const AppInfo({
-101:     required this.id,
-102:     required this.name,
-103:     required this.emoji,
-104:     required this.primaryColor,
-105:     required this.cardColor,
-106:     required this.acceptButtonName,
-107:   });
-108: }
-109: 
-110: const List<AppInfo> kApps = [
-111:   AppInfo(
-112:     id: 'rapido',
-113:     name: 'Rapido',
-114:     emoji: '🛺',
-115:     primaryColor: Color(0xFFFFCC00),
-116:     cardColor: Color(0xFF2A2200),
-117:     acceptButtonName: '"Accept" button',
-118:   ),
-119:   AppInfo(
-120:     id: 'azhai',
-121:     name: 'Azhai Partner',
-122:     emoji: '🟢',
-123:     primaryColor: Color(0xFF00C853),
-124:     cardColor: Color(0xFF0D2B0D),
-125:     acceptButtonName: '"ACCEPT ORDER" button',
-126:   ),
-127:   AppInfo(
-128:     id: 'ola',
-129:     name: 'OLA',
-130:     emoji: '🟡',
-131:     primaryColor: Color(0xFFF7C31C),
-132:     cardColor: Color(0xFF2A1F00),
-133:     acceptButtonName: '"Accept in X" button',
-134:   ),
-135: ];
-136: 
-137: // ─────────────────────────────────────────────────────────────────────────────
-138: // Location Profiles Model
-139: // ─────────────────────────────────────────────────────────────────────────────
-140: class LocationProfile {
-141:   String id;
-142:   String name;
-143:   String locations;
-144:   bool isActive;
-145: 
-146:   LocationProfile({
-147:     required this.id,
-148:     required this.name,
-149:     required this.locations,
-150:     this.isActive = false,
-151:   });
-152: 
-153:   Map<String, dynamic> toJson() => {
-154:         'id': id,
-155:         'name': name,
-156:         'locations': locations,
-157:         'isActive': isActive,
-158:       };
-159: 
-160:   factory LocationProfile.fromJson(Map<String, dynamic> json) =>
-161:       LocationProfile(
-162:         id: json['id'],
-163:         name: json['name'],
-164:         locations: json['locations'],
-165:         isActive: json['isActive'] ?? false,
-166:       );
-167: }
-168: 
-169: const _channel = MethodChannel('com.example.autoclicker/accessibility');
-170: 
-171: // ─────────────────────────────────────────────────────────────────────────────
-172: // Home Page
-173: // ─────────────────────────────────────────────────────────────────────────────
-174: class HomePage extends StatefulWidget {
-175:   const HomePage({super.key});
-176: 
-177:   @override
-178:   State<HomePage> createState() => _HomePageState();
-179: }
-180: 
-181: class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
-182:   IO.Socket? _socket;
-183:   int _apiFailCount = 0;
-184:   String? _driverId;
-185: 
-186:   bool _serviceActive = false;
-187:   bool _isHUDEnabled = true;
-188:   int _totalAccepted = 0;
-189:   String _lastActivity = 'Waiting for ride requests...';
-190: 
-191:   // Per-app state
-192:   final Map<String, bool> _appEnabled = {};
-193:   final Map<String, String> _appLocation = {};
-194:   final Map<String, TextEditingController> _controllers = {};
-195:   final Map<String, RangeValues> _pickupRanges = {};
-196:   final Map<String, RangeValues> _dropRanges = {};
-197:   final Map<String, RangeValues> _priceRanges = {};
-198:   
-199:   // Location Profiles
-200:   List<LocationProfile> _profiles = [];
-201: 
-202:   @override
-203:   void initState() {
-204:     super.initState();
-205:     WidgetsBinding.instance.addObserver(this);
-206:     _initSocketAndDriver();
-207:     for (final app in kApps) {
-208:       _appEnabled[app.id] = false;
-209:       _appLocation[app.id] = '';
-210:       _controllers[app.id] = TextEditingController();
-211:       _pickupRanges[app.id] = const RangeValues(0.0, 5.0);
-212:       _dropRanges[app.id] = const RangeValues(0.0, 50.0);
-213:       _priceRanges[app.id] = const RangeValues(0.0, 1500.0);
-214:     }
-215:     _loadAllStates();
-216:     _setupMethodCallHandler();
-217:   }
-218: 
-219:   @override
-220:   void dispose() {
-221:     _socket?.disconnect();
-222:     _socket?.dispose();
-223:     WidgetsBinding.instance.removeObserver(this);
-224:     for (final c in _controllers.values) c.dispose();
-225:     super.dispose();
-226:   }
-227: 
-228:   @override
-229:   void didChangeAppLifecycleState(AppLifecycleState state) {
-230:     if (state == AppLifecycleState.resumed) _checkServiceStatus();
-231:   }
-232: 
-233:   // ── Method Channel Handler (receive from native) ──────────────────────────
-234: 
-235:   void _setupMethodCallHandler() {
-236:     _channel.setMethodCallHandler((call) async {
-237:       if (call.method == 'onRideAccepted') {
-238:         final appName = call.arguments['appName'] as String? ?? '';
-239:         final location = call.arguments['location'] as String? ?? '';
-240:         setState(() {
-241:           _totalAccepted++;
-242:           _lastActivity = '⚡ [$appName] Accepted • $location';
-243:         });
-244:         
-245:         // Update server
-246:         if (_driverId != null) {
-247:           try {
-248:             final response = await http.post(
-249:               Uri.parse('http://43.205.135.3:3000/api/update-clicker-trip'),
-250:               headers: {'Content-Type': 'application/json'},
-251:               body: jsonEncode({'driver_id': _driverId}),
-252:             ).timeout(const Duration(seconds: 10));
-253:             
-254:             _apiFailCount = 0; // reset on success
-255:             
-256:             final data = jsonDecode(response.body);
-257:             if (data['is_blocked'] == true) {
-258:               _disableAllAppsAndStopService("Limit reached. Your account is blocked.");
-259:             }
-260:           } catch (e) {
-261:             _apiFailCount++;
-262:             if (_apiFailCount >= 3) {
-263:               _disableAllAppsAndStopService("Server Maintenance / Connection Error. Please contact Admin.");
-264:             }
-265:           }
-266:         }
-267:       } else if (call.method == 'onRideDetected') {
-268:         final appName = call.arguments['appName'] as String? ?? '';
-269:         final info = call.arguments['info'] as String? ?? '';
-270:         setState(() => _lastActivity = '⏳ [$appName] $info');
-271:       }
-272:     });
-273:   }
-274: 
-275:   // ── Load / Save ───────────────────────────────────────────────────────────
-276: 
-277:   Future<void> _loadAllStates() async {
-278:     await _checkServiceStatus();
-279:     try {
-280:       final result = await _channel.invokeMethod<Map>('getAllAppStates');
-281:       if (result != null && mounted) {
-282:         setState(() {
-283:           for (final app in kApps) {
-284:             _appEnabled[app.id] = result['${app.id}_enabled'] as bool? ?? false;
-285:             _appLocation[app.id] = result['${app.id}_location'] as String? ?? '';
-286:             final loc = _appLocation[app.id] ?? '';
-287:             if (loc.isNotEmpty) _controllers[app.id]!.text = loc;
-288:             double pMin = (result['${app.id}_pickup_min'] as num?)?.toDouble() ?? 0.0;
-289:             double pMax = (result['${app.id}_pickup_max'] as num?)?.toDouble() ?? 5.0;
-290:             if (pMax > 5.0) pMax = 5.0;
-291:             _pickupRanges[app.id] = RangeValues(pMin, pMax);
-292:             _dropRanges[app.id] = RangeValues(
-293:               (result['${app.id}_drop_min'] as num?)?.toDouble() ?? 0.0,
-294:               (result['${app.id}_drop_max'] as num?)?.toDouble() ?? 50.0,
-295:             );
-296:             _priceRanges[app.id] = RangeValues(
-297:               (result['${app.id}_price_min'] as num?)?.toDouble() ?? 0.0,
-298:               (result['${app.id}_price_max'] as num?)?.toDouble() ?? 1500.0,
-299:             );
-300:           }
-301:           _totalAccepted = result['totalAccepted'] as int? ?? 0;
-302:           _isHUDEnabled = result['isHUDEnabled'] as bool? ?? true;
-303:           
-304:           final profilesJson = result['locationProfiles'] as String? ?? '[]';
-305:           try {
-306:             final List decoded = jsonDecode(profilesJson);
-307:             _profiles = decoded.map((e) => LocationProfile.fromJson(e)).toList();
-308:           } catch (_) {
-309:             _profiles = [];
-310:           }
-311:         });
-312:       }
-313:     } catch (_) {}
-314:   }
-315: 
-316:   Future<void> _checkServiceStatus() async {
-317:     try {
-318:       final bool result = await _channel.invokeMethod('isServiceEnabled') ?? false;
-319:       if (mounted) setState(() => _serviceActive = result);
-320:     } catch (_) {
-321:       if (mounted) setState(() => _serviceActive = false);
-322:     }
-323:   }
-324: 
-325:   Future<void> _setHUDEnabled(bool value) async {
-326:     setState(() => _isHUDEnabled = value);
-327:     try {
-328:       await _channel.invokeMethod('setHUDEnabled', {'enabled': value});
-329:     } catch (_) {}
-330:   }
-331: 
-332:   // ── Profile Methods ──
-333: 
-334:   Future<void> _saveProfiles() async {
-335:     final jsonStr = jsonEncode(_profiles.map((p) => p.toJson()).toList());
-336:     
-337:     // Collect active locations
-338:     final activeLocations = _profiles
-339:         .where((p) => p.isActive)
-340:         .map((p) => p.locations)
-341:         .where((locs) => locs.trim().isNotEmpty)
-342:         .join(',');
-343: 
-344:     try {
-345:       await _channel.invokeMethod('setLocationProfiles', {
-346:         'profilesJson': jsonStr,
-347:         'activeLocations': activeLocations,
-348:       });
-349:     } catch (_) {}
-350:   }
-351: 
-352:   void _addOrEditProfile([LocationProfile? profile]) {
-353:     final isEditing = profile != null;
-354:     final nameCtrl = TextEditingController(text: profile?.name ?? '');
-355:     final locsCtrl = TextEditingController(text: profile?.locations ?? '');
-356: 
-357:     showDialog(
-358:       context: context,
-359:       builder: (context) {
-360:         return AlertDialog(
-361:           backgroundColor: const Color(0xFF1A1A1A),
-362:           title: Text(isEditing ? 'Edit Profile' : 'New Profile',
-363:               style: const TextStyle(color: Colors.white)),
-364:           content: Column(
-365:             mainAxisSize: MainAxisSize.min,
-366:             children: [
-367:               TextField(
-368:                 controller: nameCtrl,
-369:                 style: const TextStyle(color: Colors.white),
-370:                 decoration: const InputDecoration(
-371:                   labelText: 'Profile Name (e.g. Home)',
-372:                   labelStyle: TextStyle(color: Colors.white54),
-373:                 ),
-374:               ),
-375:               const SizedBox(height: 12),
-376:               TextField(
-377:                 controller: locsCtrl,
-378:                 style: const TextStyle(color: Colors.white),
-379:                 decoration: const InputDecoration(
-380:                   labelText: 'Locations (comma separated)',
-381:                   labelStyle: TextStyle(color: Colors.white54),
-382:                 ),
-383:                 maxLines: 3,
-384:               ),
-385:             ],
-386:           ),
-387:           actions: [
-388:             TextButton(
-389:               onPressed: () => Navigator.pop(context),
-390:               child: const Text('CANCEL', style: TextStyle(color: Colors.white54)),
-391:             ),
-392:             ElevatedButton(
-393:               style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFFFCC00)),
-394:               onPressed: () {
-395:                 final name = nameCtrl.text.trim();
-396:                 final locs = locsCtrl.text.trim();
-397:                 if (name.isEmpty || locs.isEmpty) return;
-398:                 
-399:                 setState(() {
-400:                   if (isEditing) {
-401:                     profile.name = name;
-402:                     profile.locations = locs;
-403:                   } else {
-404:                     _profiles.add(LocationProfile(
-405:                       id: DateTime.now().millisecondsSinceEpoch.toString(),
-406:                       name: name,
-407:                       locations: locs,
-408:                     ));
-409:                   }
-410:                 });
-411:                 _saveProfiles();
-412:                 Navigator.pop(context);
-413:               },
-414:               child: const Text('SAVE', style: TextStyle(color: Colors.black)),
-415:             ),
-416:           ],
-417:         );
-418:       },
-419:     );
-420:   }
-421: 
-422:   void _toggleProfile(LocationProfile profile, bool value) {
-423:     setState(() => profile.isActive = value);
-424:     _saveProfiles();
-425:   }
-426: 
-427:   void _deleteProfile(LocationProfile profile) {
-428:     setState(() => _profiles.remove(profile));
-429:     _saveProfiles();
-430:   }
-431: 
-432:   // ────────────────────────
-433: 
-434:   Future<void> _setAppEnabled(String appId, bool value) async {
-435:     setState(() => _appEnabled[appId] = value);
-436:     try {
-437:       await _channel.invokeMethod('setAppEnabled', {'appId': appId, 'enabled': value});
-438:     } catch (_) {}
-439:   }
-440:   Future<void> _initSocketAndDriver() async {
-441:     final prefs = await SharedPreferences.getInstance();
-442:     _driverId = prefs.getString('driverId');
-443: 
-444:     if (_driverId != null) {
-445:       _socket = IO.io('http://43.205.135.3:3000', IO.OptionBuilder()
-446:           .setTransports(['websocket'])
-447:           .disableAutoConnect()
-448:           .build());
-449: 
-450:       _socket?.connect();
-451: 
-452:       _socket?.onConnect((_) {
-453:         print('Connected to Socket');
-454:         _socket?.emit('identifyClicker', {'driverId': _driverId});
-455:       });
-456: 
+64: // App Root
+
+65: // ─────────────────────────────────────────────────────────────────────────────
+
+66: class RapidoAutoClickerApp extends StatelessWidget {
+
+67:   const RapidoAutoClickerApp({super.key});
+
+68: 
+
+69:   @override
+
+70:   Widget build(BuildContext context) {
+
+71:     return MaterialApp(
+
+72:       title: 'Auto Clicker',
+
+73:       debugShowCheckedModeBanner: false,
+
+74:       theme: ThemeData(
+
+75:         colorScheme: const ColorScheme.dark(
+
+76:           primary: Color(0xFFFFCC00),
+
+77:           onPrimary: Color(0xFF0F0F0F),
+
+78:           surface: Color(0xFF1E1E1E),
+
+79:           onSurface: Colors.white,
+
+80:         ),
+
+81:         scaffoldBackgroundColor: const Color(0xFF0F0F0F),
+
+82:         useMaterial3: true,
+
+83:       ),
+
+84:       home: const SplashPage(),
+
+85:     );
+
+86:   }
+
+87: }
+
+88: 
+
+89: // ─────────────────────────────────────────────────────────────────────────────
+
+90: // App Info Model
+
+91: // ─────────────────────────────────────────────────────────────────────────────
+
+92: class AppInfo {
+
+93:   final String id;
+
+94:   final String name;
+
+95:   final String emoji;
+
+96:   final Color primaryColor;
+
+97:   final Color cardColor;
+
+98:   final String acceptButtonName;
+
+99: 
+
+100:   const AppInfo({
+
+101:     required this.id,
+
+102:     required this.name,
+
+103:     required this.emoji,
+
+104:     required this.primaryColor,
+
+105:     required this.cardColor,
+
+106:     required this.acceptButtonName,
+
+107:   });
+
+108: }
+
+109: 
+
+110: const List<AppInfo> kApps = [
+
+111:   AppInfo(
+
+112:     id: 'rapido',
+
+113:     name: 'Rapido',
+
+114:     emoji: '🛺',
+
+115:     primaryColor: Color(0xFFFFCC00),
+
+116:     cardColor: Color(0xFF2A2200),
+
+117:     acceptButtonName: '"Accept" button',
+
+118:   ),
+
+119:   AppInfo(
+
+120:     id: 'azhai',
+
+121:     name: 'Azhai Partner',
+
+122:     emoji: '🟢',
+
+123:     primaryColor: Color(0xFF00C853),
+
+124:     cardColor: Color(0xFF0D2B0D),
+
+125:     acceptButtonName: '"ACCEPT ORDER" button',
+
+126:   ),
+
+127:   AppInfo(
+
+128:     id: 'ola',
+
+129:     name: 'OLA',
+
+130:     emoji: '🟡',
+
+131:     primaryColor: Color(0xFFF7C31C),
+
+132:     cardColor: Color(0xFF2A1F00),
+
+133:     acceptButtonName: '"Accept in X" button',
+
+134:   ),
+
+135: ];
+
+136: 
+
+137: // ─────────────────────────────────────────────────────────────────────────────
+
+138: // Location Profiles Model
+
+139: // ─────────────────────────────────────────────────────────────────────────────
+
+140: class LocationProfile {
+
+141:   String id;
+
+142:   String name;
+
+143:   String locations;
+
+144:   bool isActive;
+
+145: 
+
+146:   LocationProfile({
+
+147:     required this.id,
+
+148:     required this.name,
+
+149:     required this.locations,
+
+150:     this.isActive = false,
+
+151:   });
+
+152: 
+
+153:   Map<String, dynamic> toJson() => {
+
+154:         'id': id,
+
+155:         'name': name,
+
+156:         'locations': locations,
+
+157:         'isActive': isActive,
+
+158:       };
+
+159: 
+
+160:   factory LocationProfile.fromJson(Map<String, dynamic> json) =>
+
+161:       LocationProfile(
+
+162:         id: json['id'],
+
+163:         name: json['name'],
+
+164:         locations: json['locations'],
+
+165:         isActive: json['isActive'] ?? false,
+
+166:       );
+
+167: }
+
+168: 
+
+169: const _channel = MethodChannel('com.example.autoclicker/accessibility');
+
+170: 
+
+171: // ─────────────────────────────────────────────────────────────────────────────
+
+172: // Home Page
+
+173: // ─────────────────────────────────────────────────────────────────────────────
+
+174: class HomePage extends StatefulWidget {
+
+175:   const HomePage({super.key});
+
+176: 
+
+177:   @override
+
+178:   State<HomePage> createState() => _HomePageState();
+
+179: }
+
+180: 
+
+181: class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
+
+182:   IO.Socket? _socket;
+
+183:   int _apiFailCount = 0;
+
+184:   String? _driverId;
+
+185: 
+
+186:   bool _serviceActive = false;
+
+187:   bool _isHUDEnabled = true;
+
+188:   int _totalAccepted = 0;
+
+189:   String _lastActivity = 'Waiting for ride requests...';
+
+190: 
+
+191:   // Per-app state
+
+192:   final Map<String, bool> _appEnabled = {};
+
+193:   final Map<String, String> _appLocation = {};
+
+194:   final Map<String, TextEditingController> _controllers = {};
+
+195:   final Map<String, RangeValues> _pickupRanges = {};
+
+196:   final Map<String, RangeValues> _dropRanges = {};
+
+197:   final Map<String, RangeValues> _priceRanges = {};
+
+198:   
+
+199:   // Location Profiles
+
+200:   List<LocationProfile> _profiles = [];
+
+201: 
+
+202:   @override
+
+203:   void initState() {
+
+204:     super.initState();
+
+205:     WidgetsBinding.instance.addObserver(this);
+
+206:     _initSocketAndDriver();
+
+207:     for (final app in kApps) {
+
+208:       _appEnabled[app.id] = false;
+
+209:       _appLocation[app.id] = '';
+
+210:       _controllers[app.id] = TextEditingController();
+
+211:       _pickupRanges[app.id] = const RangeValues(0.0, 5.0);
+
+212:       _dropRanges[app.id] = const RangeValues(0.0, 50.0);
+
+213:       _priceRanges[app.id] = const RangeValues(0.0, 1500.0);
+
+214:     }
+
+215:     _loadAllStates();
+
+216:     _setupMethodCallHandler();
+
+217:   }
+
+218: 
+
+219:   @override
+
+220:   void dispose() {
+
+221:     _socket?.disconnect();
+
+222:     _socket?.dispose();
+
+223:     WidgetsBinding.instance.removeObserver(this);
+
+224:     for (final c in _controllers.values) c.dispose();
+
+225:     super.dispose();
+
+226:   }
+
+227: 
+
+228:   @override
+
+229:   void didChangeAppLifecycleState(AppLifecycleState state) {
+
+230:     if (state == AppLifecycleState.resumed) _checkServiceStatus();
+
+231:   }
+
+232: 
+
+233:   // ── Method Channel Handler (receive from native) ──────────────────────────
+
+234: 
+
+235:   void _setupMethodCallHandler() {
+
+236:     _channel.setMethodCallHandler((call) async {
+
+237:       if (call.method == 'onRideAccepted') {
+
+238:         final appName = call.arguments['appName'] as String? ?? '';
+
+239:         final location = call.arguments['location'] as String? ?? '';
+
+240:         setState(() {
+
+241:           _totalAccepted++;
+
+242:           _lastActivity = '⚡ [$appName] Accepted • $location';
+
+243:         });
+
+244:         
+
+245:         // Update server
+
+246:         if (_driverId != null) {
+
+247:           try {
+
+248:             final response = await http.post(
+
+249:               Uri.parse('http://43.205.135.3:3000/api/update-clicker-trip'),
+
+250:               headers: {'Content-Type': 'application/json'},
+
+251:               body: jsonEncode({'driver_id': _driverId}),
+
+252:             ).timeout(const Duration(seconds: 10));
+
+253:             
+
+254:             _apiFailCount = 0; // reset on success
+
+255:             
+
+256:             final data = jsonDecode(response.body);
+
+257:             if (data['is_blocked'] == true) {
+
+258:               _disableAllAppsAndStopService("Limit reached. Your account is blocked.");
+
+259:             }
+
+260:           } catch (e) {
+
+261:             _apiFailCount++;
+
+262:             if (_apiFailCount >= 3) {
+
+263:               _disableAllAppsAndStopService("Server Maintenance / Connection Error. Please contact Admin.");
+
+264:             }
+
+265:           }
+
+266:         }
+
+267:       } else if (call.method == 'onRideDetected') {
+
+268:         final appName = call.arguments['appName'] as String? ?? '';
+
+269:         final info = call.arguments['info'] as String? ?? '';
+
+270:         setState(() => _lastActivity = '⏳ [$appName] $info');
+
+271:       }
+
+272:     });
+
+273:   }
+
+274: 
+
+275:   // ── Load / Save ───────────────────────────────────────────────────────────
+
+276: 
+
+277:   Future<void> _loadAllStates() async {
+
+278:     await _checkServiceStatus();
+
+279:     try {
+
+280:       final result = await _channel.invokeMethod<Map>('getAllAppStates');
+
+281:       if (result != null && mounted) {
+
+282:         setState(() {
+
+283:           for (final app in kApps) {
+
+284:             _appEnabled[app.id] = result['${app.id}_enabled'] as bool? ?? false;
+
+285:             _appLocation[app.id] = result['${app.id}_location'] as String? ?? '';
+
+286:             final loc = _appLocation[app.id] ?? '';
+
+287:             if (loc.isNotEmpty) _controllers[app.id]!.text = loc;
+
+288:             double pMin = (result['${app.id}_pickup_min'] as num?)?.toDouble() ?? 0.0;
+
+289:             double pMax = (result['${app.id}_pickup_max'] as num?)?.toDouble() ?? 5.0;
+
+290:             if (pMax > 5.0) pMax = 5.0;
+
+291:             _pickupRanges[app.id] = RangeValues(pMin, pMax);
+
+292:             _dropRanges[app.id] = RangeValues(
+
+293:               (result['${app.id}_drop_min'] as num?)?.toDouble() ?? 0.0,
+
+294:               (result['${app.id}_drop_max'] as num?)?.toDouble() ?? 50.0,
+
+295:             );
+
+296:             _priceRanges[app.id] = RangeValues(
+
+297:               (result['${app.id}_price_min'] as num?)?.toDouble() ?? 0.0,
+
+298:               (result['${app.id}_price_max'] as num?)?.toDouble() ?? 1500.0,
+
+299:             );
+
+300:           }
+
+301:           _totalAccepted = result['totalAccepted'] as int? ?? 0;
+
+302:           _isHUDEnabled = result['isHUDEnabled'] as bool? ?? true;
+
+303:           
+
+304:           final profilesJson = result['locationProfiles'] as String? ?? '[]';
+
+305:           try {
+
+306:             final List decoded = jsonDecode(profilesJson);
+
+307:             _profiles = decoded.map((e) => LocationProfile.fromJson(e)).toList();
+
+308:           } catch (_) {
+
+309:             _profiles = [];
+
+310:           }
+
+311:         });
+
+312:       }
+
+313:     } catch (_) {}
+
+314:   }
+
+315: 
+
+316:   Future<void> _checkServiceStatus() async {
+
+317:     try {
+
+318:       final bool result = await _channel.invokeMethod('isServiceEnabled') ?? false;
+
+319:       if (mounted) setState(() => _serviceActive = result);
+
+320:     } catch (_) {
+
+321:       if (mounted) setState(() => _serviceActive = false);
+
+322:     }
+
+323:   }
+
+324: 
+
+325:   Future<void> _setHUDEnabled(bool value) async {
+
+326:     setState(() => _isHUDEnabled = value);
+
+327:     try {
+
+328:       await _channel.invokeMethod('setHUDEnabled', {'enabled': value});
+
+329:     } catch (_) {}
+
+330:   }
+
+331: 
+
+332:   // ── Profile Methods ──
+
+333: 
+
+334:   Future<void> _saveProfiles() async {
+
+335:     final jsonStr = jsonEncode(_profiles.map((p) => p.toJson()).toList());
+
+336:     
+
+337:     // Collect active locations
+
+338:     final activeLocations = _profiles
+
+339:         .where((p) => p.isActive)
+
+340:         .map((p) => p.locations)
+
+341:         .where((locs) => locs.trim().isNotEmpty)
+
+342:         .join(',');
+
+343: 
+
+344:     try {
+
+345:       await _channel.invokeMethod('setLocationProfiles', {
+
+346:         'profilesJson': jsonStr,
+
+347:         'activeLocations': activeLocations,
+
+348:       });
+
+349:     } catch (_) {}
+
+350:   }
+
+351: 
+
+352:   void _addOrEditProfile([LocationProfile? profile]) {
+
+353:     final isEditing = profile != null;
+
+354:     final nameCtrl = TextEditingController(text: profile?.name ?? '');
+
+355:     final locsCtrl = TextEditingController(text: profile?.locations ?? '');
+
+356: 
+
+357:     showDialog(
+
+358:       context: context,
+
+359:       builder: (context) {
+
+360:         return AlertDialog(
+
+361:           backgroundColor: const Color(0xFF1A1A1A),
+
+362:           title: Text(isEditing ? 'Edit Profile' : 'New Profile',
+
+363:               style: const TextStyle(color: Colors.white)),
+
+364:           content: Column(
+
+365:             mainAxisSize: MainAxisSize.min,
+
+366:             children: [
+
+367:               TextField(
+
+368:                 controller: nameCtrl,
+
+369:                 style: const TextStyle(color: Colors.white),
+
+370:                 decoration: const InputDecoration(
+
+371:                   labelText: 'Profile Name (e.g. Home)',
+
+372:                   labelStyle: TextStyle(color: Colors.white54),
+
+373:                 ),
+
+374:               ),
+
+375:               const SizedBox(height: 12),
+
+376:               TextField(
+
+377:                 controller: locsCtrl,
+
+378:                 style: const TextStyle(color: Colors.white),
+
+379:                 decoration: const InputDecoration(
+
+380:                   labelText: 'Locations (comma separated)',
+
+381:                   labelStyle: TextStyle(color: Colors.white54),
+
+382:                 ),
+
+383:                 maxLines: 3,
+
+384:               ),
+
+385:             ],
+
+386:           ),
+
+387:           actions: [
+
+388:             TextButton(
+
+389:               onPressed: () => Navigator.pop(context),
+
+390:               child: const Text('CANCEL', style: TextStyle(color: Colors.white54)),
+
+391:             ),
+
+392:             ElevatedButton(
+
+393:               style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFFFCC00)),
+
+394:               onPressed: () {
+
+395:                 final name = nameCtrl.text.trim();
+
+396:                 final locs = locsCtrl.text.trim();
+
+397:                 if (name.isEmpty || locs.isEmpty) return;
+
+398:                 
+
+399:                 setState(() {
+
+400:                   if (isEditing) {
+
+401:                     profile.name = name;
+
+402:                     profile.locations = locs;
+
+403:                   } else {
+
+404:                     _profiles.add(LocationProfile(
+
+405:                       id: DateTime.now().millisecondsSinceEpoch.toString(),
+
+406:                       name: name,
+
+407:                       locations: locs,
+
+408:                     ));
+
+409:                   }
+
+410:                 });
+
+411:                 _saveProfiles();
+
+412:                 Navigator.pop(context);
+
+413:               },
+
+414:               child: const Text('SAVE', style: TextStyle(color: Colors.black)),
+
+415:             ),
+
+416:           ],
+
+417:         );
+
+418:       },
+
+419:     );
+
+420:   }
+
+421: 
+
+422:   void _toggleProfile(LocationProfile profile, bool value) {
+
+423:     setState(() => profile.isActive = value);
+
+424:     _saveProfiles();
+
+425:   }
+
+426: 
+
+427:   void _deleteProfile(LocationProfile profile) {
+
+428:     setState(() => _profiles.remove(profile));
+
+429:     _saveProfiles();
+
+430:   }
+
+431: 
+
+432:   // ────────────────────────
+
+433: 
+
+434:   Future<void> _setAppEnabled(String appId, bool value) async {
+
+435:     setState(() => _appEnabled[appId] = value);
+
+436:     try {
+
+437:       await _channel.invokeMethod('setAppEnabled', {'appId': appId, 'enabled': value});
+
+438:     } catch (_) {}
+
+439:   }
+
+440:   Future<void> _initSocketAndDriver() async {
+
+441:     final prefs = await SharedPreferences.getInstance();
+
+442:     _driverId = prefs.getString('driverId');
+
+443: 
+
+444:     if (_driverId != null) {
+
+445:       _socket = IO.io('http://43.205.135.3:3000', IO.OptionBuilder()
+
+446:           .setTransports(['websocket'])
+
+447:           .disableAutoConnect()
+
+448:           .build());
+
+449: 
+
+450:       _socket?.connect();
+
+451: 
+
+452:       _socket?.onConnect((_) {
+
+453:         print('Connected to Socket');
+
+454:         _socket?.emit('identifyClicker', {'driverId': _driverId});
+
+455:       });
+
+456: 
+
 457:       _socket?.on('clickerBlockStatus', (data) {
 458:         if (data != null && data['isBlocked'] == true) {
 459:            _disableAllAppsAndStopService("Your account has been blocked by Admin.");
@@ -481,175 +890,344 @@ The following code has been modified to include a line number before every line,
 474:            );
 475:         }
 476:       });
-477:     }
-478:   }
-479: 
-480:   void _disableAllAppsAndStopService(String reason) async {
-481:     // Disable all apps
-482:     for (final app in kApps) {
-483:       if (_appEnabled[app.id] == true) {
-484:         await _setAppEnabled(app.id, false);
-485:       }
-486:     }
-487:     // Also disable the main service
-488:     if (_serviceActive) {
-489:       setState(() => _serviceActive = false);
-490:       try {
-491:         await _channel.invokeMethod('setServiceActive', {'active': false});
-492:       } catch (_) {}
-493:     }
-494:     
-495:     // Logout and go to login page
-496:     final prefs = await SharedPreferences.getInstance();
-497:     await prefs.setBool('isLoggedIn', false);
-498:     
-499:     if (mounted) {
-500:       showDialog(
-501:         context: context,
-502:         barrierDismissible: false,
-503:         builder: (context) => AlertDialog(
-504:           title: Text("Access Denied", style: TextStyle(color: Colors.white)),
-505:           content: Text(reason, style: TextStyle(color: Colors.white70)),
-506:           backgroundColor: Color(0xFF1E2026),
-507:           actions: [
-508:             TextButton(
-509:               onPressed: () {
-510:                 Navigator.of(context).pushAndRemoveUntil(
-511:                   MaterialPageRoute(builder: (context) => const LoginPage()),
-512:                   (Route<dynamic> route) => false,
-513:                 );
-514:               },
-515:               child: Text("OK", style: TextStyle(color: Color(0xFFFFCC00))),
-516:             )
-517:           ]
-518:         )
-519:       );
-520:     }
-521:   }
-522: 
-523: 
-524:   Future<void> _saveAppLocation(String appId, String location) async {
-525:     setState(() => _appLocation[appId] = location);
-526:     try {
-527:       await _channel.invokeMethod('setAppLocation', {'appId': appId, 'location': location});
-528:     } catch (_) {}
-529:   }
-530: 
-531:   Future<void> _saveAppFilters(String appId) async {
-532:     try {
-533:       await _channel.invokeMethod('setAppFilters', {
-534:         'appId': appId,
-535:         'pickupMin': _pickupRanges[appId]!.start,
-536:         'pickupMax': _pickupRanges[appId]!.end,
-537:         'dropMin': _dropRanges[appId]!.start,
-538:         'dropMax': _dropRanges[appId]!.end,
-539:         'priceMin': _priceRanges[appId]!.start,
-540:         'priceMax': _priceRanges[appId]!.end,
-541:       });
-542:     } catch (_) {}
-543:   }
-544: 
-545:   Future<void> _showCropBox(String appName) async {
-546:     if (!_serviceActive) {
-547:       _showSnack('First enable Accessibility Service!');
-548:       return;
-549:     }
-550:     try {
-551:       await _channel.invokeMethod('showCropBox', {'appName': appName});
-552:       _showSnack('Open $appName app to set the crop box');
-553:     } on PlatformException catch (e) {
-554:       debugPrint("Failed to show crop box: '${e.message}'.");
-555:     }
-556:   }
-557: 
-558:   void _openAccessibilitySettings() {
-559:     _channel.invokeMethod('openAccessibilitySettings');
-560:   }
-561: 
-562:   // ─────────────────────────────────────────────────────────────────────────
-563:   // Build
-564:   // ─────────────────────────────────────────────────────────────────────────
-565: 
-566:   @override
-567:   Widget build(BuildContext context) {
-568:     return Scaffold(
-569:       body: SafeArea(
-570:         child: SingleChildScrollView(
-571:           padding: const EdgeInsets.all(16),
-572:           child: Column(
-573:             crossAxisAlignment: CrossAxisAlignment.start,
-574:             children: [
-575:               const SizedBox(height: 12),
-576:               _buildHeader(),
-577:               const SizedBox(height: 16),
-578:               _buildHUDToggleCard(),
-579:               const SizedBox(height: 16),
-580:               _buildProfilesCard(),
-581:               const SizedBox(height: 16),
-582:               SizedBox(
-583:                 width: double.infinity,
-584:                 child: ElevatedButton.icon(
-585:                   icon: const Icon(Icons.history, size: 18),
-586:                   label: const Text('Open Ride History Page', style: TextStyle(fontWeight: FontWeight.bold)),
-587:                   style: ElevatedButton.styleFrom(
-588:                     backgroundColor: const Color(0xFFFFCC00),
-589:                     foregroundColor: Colors.black,
-590:                     padding: const EdgeInsets.symmetric(vertical: 14),
-591:                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-592:                   ),
-593:                   onPressed: () {
-594:                     Navigator.push(
-595:                       context,
-596:                       MaterialPageRoute(builder: (context) => const RideHistoryPage()),
-597:                     );
-598:                   },
-599:                 ),
-600:               ),
-601:               const SizedBox(height: 16),
-602:               _buildOverallStatusCard(),
-603:               const SizedBox(height: 16),
-604:               if (!_serviceActive) _buildAccessibilityWarningCard(),
-605:               if (!_serviceActive) const SizedBox(height: 16),
-606: 
-607:               // ── 4 App Cards ──
-608:               const Text(
-609:                 'Apps',
-610:                 style: TextStyle(
-611:                     fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white),
-612:               ),
-613:               const SizedBox(height: 12),
-614:               ...kApps.map((app) => Padding(
-615:                     padding: const EdgeInsets.only(bottom: 12),
-616:                     child: _buildAppCard(app),
-617:                   )),
-618: 
-619:               const SizedBox(height: 8),
-620:               _buildHowItWorksCard(),
-621:               const SizedBox(height: 24),
-622:             ],
-623:           ),
-624:         ),
-625:       ),
-626:     );
-627:   }
-628: 
-629:   // ── Header ────────────────────────────────────────────────────────────────
-630: 
-631:   Widget _buildHeader() {
-632:     final activeCount = _appEnabled.values.where((v) => v).length;
-633:     return Row(
-634:       children: [
-635:         const Column(
-636:           crossAxisAlignment: CrossAxisAlignment.start,
-637:           children: [
-638:             Text('Auto Clicker',
-639:                 style: TextStyle(
-640:                     fontSize: 26, fontWeight: FontWeight.bold, color: Colors.white)),
-641:             Text('Ride Accept Automation',
-642:                 style: TextStyle(fontSize: 13, color: Color(0xFFB3B3B3))),
-643:           ],
-644:         ),
-645:         const Spacer(),
+477:     }
+
+478:   }
+
+479: 
+
+480:   void _disableAllAppsAndStopService(String reason) async {
+
+481:     // Disable all apps
+
+482:     for (final app in kApps) {
+
+483:       if (_appEnabled[app.id] == true) {
+
+484:         await _setAppEnabled(app.id, false);
+
+485:       }
+
+486:     }
+
+487:     // Also disable the main service
+
+488:     if (_serviceActive) {
+
+489:       setState(() => _serviceActive = false);
+
+490:       try {
+
+491:         await _channel.invokeMethod('setServiceActive', {'active': false});
+
+492:       } catch (_) {}
+
+493:     }
+
+494:     
+
+495:     // Logout and go to login page
+
+496:     final prefs = await SharedPreferences.getInstance();
+
+497:     await prefs.setBool('isLoggedIn', false);
+
+498:     
+
+499:     if (mounted) {
+
+500:       showDialog(
+
+501:         context: context,
+
+502:         barrierDismissible: false,
+
+503:         builder: (context) => AlertDialog(
+
+504:           title: Text("Access Denied", style: TextStyle(color: Colors.white)),
+
+505:           content: Text(reason, style: TextStyle(color: Colors.white70)),
+
+506:           backgroundColor: Color(0xFF1E2026),
+
+507:           actions: [
+
+508:             TextButton(
+
+509:               onPressed: () {
+
+510:                 Navigator.of(context).pushAndRemoveUntil(
+
+511:                   MaterialPageRoute(builder: (context) => const LoginPage()),
+
+512:                   (Route<dynamic> route) => false,
+
+513:                 );
+
+514:               },
+
+515:               child: Text("OK", style: TextStyle(color: Color(0xFFFFCC00))),
+
+516:             )
+
+517:           ]
+
+518:         )
+
+519:       );
+
+520:     }
+
+521:   }
+
+522: 
+
+523: 
+
+524:   Future<void> _saveAppLocation(String appId, String location) async {
+
+525:     setState(() => _appLocation[appId] = location);
+
+526:     try {
+
+527:       await _channel.invokeMethod('setAppLocation', {'appId': appId, 'location': location});
+
+528:     } catch (_) {}
+
+529:   }
+
+530: 
+
+531:   Future<void> _saveAppFilters(String appId) async {
+
+532:     try {
+
+533:       await _channel.invokeMethod('setAppFilters', {
+
+534:         'appId': appId,
+
+535:         'pickupMin': _pickupRanges[appId]!.start,
+
+536:         'pickupMax': _pickupRanges[appId]!.end,
+
+537:         'dropMin': _dropRanges[appId]!.start,
+
+538:         'dropMax': _dropRanges[appId]!.end,
+
+539:         'priceMin': _priceRanges[appId]!.start,
+
+540:         'priceMax': _priceRanges[appId]!.end,
+
+541:       });
+
+542:     } catch (_) {}
+
+543:   }
+
+544: 
+
+545:   Future<void> _showCropBox(String appName) async {
+
+546:     if (!_serviceActive) {
+
+547:       _showSnack('First enable Accessibility Service!');
+
+548:       return;
+
+549:     }
+
+550:     try {
+
+551:       await _channel.invokeMethod('showCropBox', {'appName': appName});
+
+552:       _showSnack('Open $appName app to set the crop box');
+
+553:     } on PlatformException catch (e) {
+
+554:       debugPrint("Failed to show crop box: '${e.message}'.");
+
+555:     }
+
+556:   }
+
+557: 
+
+558:   void _openAccessibilitySettings() {
+
+559:     _channel.invokeMethod('openAccessibilitySettings');
+
+560:   }
+
+561: 
+
+562:   // ─────────────────────────────────────────────────────────────────────────
+
+563:   // Build
+
+564:   // ─────────────────────────────────────────────────────────────────────────
+
+565: 
+
+566:   @override
+
+567:   Widget build(BuildContext context) {
+
+568:     return Scaffold(
+
+569:       body: SafeArea(
+
+570:         child: SingleChildScrollView(
+
+571:           padding: const EdgeInsets.all(16),
+
+572:           child: Column(
+
+573:             crossAxisAlignment: CrossAxisAlignment.start,
+
+574:             children: [
+
+575:               const SizedBox(height: 12),
+
+576:               _buildHeader(),
+
+577:               const SizedBox(height: 16),
+
+578:               _buildHUDToggleCard(),
+
+579:               const SizedBox(height: 16),
+
+580:               _buildProfilesCard(),
+
+581:               const SizedBox(height: 16),
+
+582:               SizedBox(
+
+583:                 width: double.infinity,
+
+584:                 child: ElevatedButton.icon(
+
+585:                   icon: const Icon(Icons.history, size: 18),
+
+586:                   label: const Text('Open Ride History Page', style: TextStyle(fontWeight: FontWeight.bold)),
+
+587:                   style: ElevatedButton.styleFrom(
+
+588:                     backgroundColor: const Color(0xFFFFCC00),
+
+589:                     foregroundColor: Colors.black,
+
+590:                     padding: const EdgeInsets.symmetric(vertical: 14),
+
+591:                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+
+592:                   ),
+
+593:                   onPressed: () {
+
+594:                     Navigator.push(
+
+595:                       context,
+
+596:                       MaterialPageRoute(builder: (context) => const RideHistoryPage()),
+
+597:                     );
+
+598:                   },
+
+599:                 ),
+
+600:               ),
+
+601:               const SizedBox(height: 16),
+
+602:               _buildOverallStatusCard(),
+
+603:               const SizedBox(height: 16),
+
+604:               if (!_serviceActive) _buildAccessibilityWarningCard(),
+
+605:               if (!_serviceActive) const SizedBox(height: 16),
+
+606: 
+
+607:               // ── 4 App Cards ──
+
+608:               const Text(
+
+609:                 'Apps',
+
+610:                 style: TextStyle(
+
+611:                     fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white),
+
+612:               ),
+
+613:               const SizedBox(height: 12),
+
+614:               ...kApps.map((app) => Padding(
+
+615:                     padding: const EdgeInsets.only(bottom: 12),
+
+616:                     child: _buildAppCard(app),
+
+617:                   )),
+
+618: 
+
+619:               const SizedBox(height: 8),
+
+620:               _buildHowItWorksCard(),
+
+621:               const SizedBox(height: 24),
+
+622:             ],
+
+623:           ),
+
+624:         ),
+
+625:       ),
+
+626:     );
+
+627:   }
+
+628: 
+
+629:   // ── Header ────────────────────────────────────────────────────────────────
+
+630: 
+
+631:   Widget _buildHeader() {
+
+632:     final activeCount = _appEnabled.values.where((v) => v).length;
+
+633:     return Row(
+
+634:       children: [
+
+635:         const Column(
+
+636:           crossAxisAlignment: CrossAxisAlignment.start,
+
+637:           children: [
+
+638:             Text('Auto Clicker',
+
+639:                 style: TextStyle(
+
+640:                     fontSize: 26, fontWeight: FontWeight.bold, color: Colors.white)),
+
+641:             Text('Ride Accept Automation',
+
+642:                 style: TextStyle(fontSize: 13, color: Color(0xFFB3B3B3))),
+
+643:           ],
+
+644:         ),
+
+645:         const Spacer(),
+
 646:         ElevatedButton.icon(
 647:           onPressed: () {
 648:             Navigator.push(
@@ -671,138 +1249,272 @@ The following code has been modified to include a line number before every line,
 664:             ),
 665:           ),
 666:         ),
-667:         const SizedBox(width: 8),
-668:         Container(
-669:           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-670:           decoration: BoxDecoration(
-671:             color: activeCount > 0
-672:                 ? const Color(0xFF152A15)
-673:                 : const Color(0xFF2A2A2A),
-674:             borderRadius: BorderRadius.circular(20),
-675:             border: Border.all(
-676:               color: activeCount > 0
-677:                   ? const Color(0xFF4CAF50)
-678:                   : const Color(0xFF444444),
-679:             ),
-680:           ),
-681:           child: Text(
-682:             '$activeCount Active',
-683:             style: TextStyle(
-684:                 fontSize: 12,
-685:                 fontWeight: FontWeight.bold,
-686:                 color: activeCount > 0
-687:                     ? const Color(0xFF4CAF50)
-688:                     : const Color(0xFF888888)),
-689:           ),
-690:         ),
-691:       ],
-692:     );
-693:   }
-694: 
-695:   // ── HUD Toggle Card ────────────────────────────────────────────────────────
-696: 
-697:   Widget _buildHUDToggleCard() {
-698:     return Container(
-699:       width: double.infinity,
-700:       padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
-701:       decoration: BoxDecoration(
-702:         color: const Color(0xFF1A1A1A),
-703:         borderRadius: BorderRadius.circular(16),
-704:         border: Border.all(color: const Color(0xFF2A2A2A)),
-705:       ),
-706:       child: Row(
-707:         mainAxisAlignment: MainAxisAlignment.spaceBetween,
-708:         children: [
-709:           const Row(
-710:             children: [
-711:               Icon(Icons.layers, color: Color(0xFFFFCC00), size: 24),
-712:               SizedBox(width: 12),
-713:               Column(
-714:                 crossAxisAlignment: CrossAxisAlignment.start,
-715:                 children: [
-716:                   Text('Show Floating Icon',
-717:                       style: TextStyle(
-718:                           fontSize: 14,
-719:                           fontWeight: FontWeight.bold,
-720:                           color: Colors.white)),
-721:                   Text('Display status over other apps',
-722:                       style: TextStyle(fontSize: 11, color: Color(0xFFB3B3B3))),
-723:                 ],
-724:               ),
-725:             ],
-726:           ),
-727:           Switch(
-728:             value: _isHUDEnabled,
-729:             onChanged: _setHUDEnabled,
-730:             activeColor: Colors.black,
-731:             activeTrackColor: const Color(0xFFFFCC00),
-732:             inactiveThumbColor: const Color(0xFF888888),
-733:             inactiveTrackColor: const Color(0xFF2A2A2A),
-734:           ),
-735:         ],
-736:       ),
-737:     );
-738:   }
-739: 
-740:   // ── Profiles Card ──────────────────────────────────────────────────────────
-741: 
-742:   Widget _buildProfilesCard() {
-743:     return Container(
-744:       width: double.infinity,
-745:       padding: const EdgeInsets.all(16),
-746:       decoration: BoxDecoration(
-747:         color: const Color(0xFF1A1A1A),
-748:         borderRadius: BorderRadius.circular(16),
-749:         border: Border.all(color: const Color(0xFF2A2A2A)),
-750:       ),
-751:       child: Column(
-752:         crossAxisAlignment: CrossAxisAlignment.start,
-753:         children: [
-754:           Row(
-755:             mainAxisAlignment: MainAxisAlignment.spaceBetween,
-756:             children: [
-757:               const Row(
-758:                 children: [
-759:                   Icon(Icons.location_on, color: Color(0xFFFFCC00), size: 20),
-760:                   SizedBox(width: 8),
-761:                   Text('Location Profiles',
-762:                       style: TextStyle(
-763:                           fontSize: 16,
-764:                           fontWeight: FontWeight.bold,
-765:                           color: Colors.white)),
-766:                 ],
-767:               ),
-768:               IconButton(
-769:                 icon: const Icon(Icons.add_circle, color: Color(0xFFFFCC00)),
-770:                 onPressed: () => _addOrEditProfile(),
-771:                 constraints: const BoxConstraints(),
-772:                 padding: EdgeInsets.zero,
-773:               ),
-774:             ],
-775:           ),
-776:           if (_profiles.isEmpty) ...[
-777:             const SizedBox(height: 12),
-778:             const Text('No profiles added. Add a profile for predefined locations.',
-779:                 style: TextStyle(fontSize: 12, color: Color(0xFFB3B3B3))),
-780:           ] else ...[
-781:             const SizedBox(height: 12),
-782:             ..._profiles.map((p) => _buildProfileItem(p)),
-783:           ]
-784:         ],
-785:       ),
-786:     );
-787:   }
-788: 
-789:   Widget _buildProfileItem(LocationProfile profile) {
-790:     return Container(
-791:       margin: const EdgeInsets.only(bottom: 8),
-792:       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-793:       decoration: BoxDecoration(
-794:         color: const Color(0xFF2A2A2A),
-795:         borderRadius: BorderRadius.circular(8),
-796:       ),
-797:       child: Row(
-798:         children: [
-799:           Expanded(
-800:             child: Column(
+667:         const SizedBox(width: 8),
+
+668:         Container(
+
+669:           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+
+670:           decoration: BoxDecoration(
+
+671:             color: activeCount > 0
+
+672:                 ? const Color(0xFF152A15)
+
+673:                 : const Color(0xFF2A2A2A),
+
+674:             borderRadius: BorderRadius.circular(20),
+
+675:             border: Border.all(
+
+676:               color: activeCount > 0
+
+677:                   ? const Color(0xFF4CAF50)
+
+678:                   : const Color(0xFF444444),
+
+679:             ),
+
+680:           ),
+
+681:           child: Text(
+
+682:             '$activeCount Active',
+
+683:             style: TextStyle(
+
+684:                 fontSize: 12,
+
+685:                 fontWeight: FontWeight.bold,
+
+686:                 color: activeCount > 0
+
+687:                     ? const Color(0xFF4CAF50)
+
+688:                     : const Color(0xFF888888)),
+
+689:           ),
+
+690:         ),
+
+691:       ],
+
+692:     );
+
+693:   }
+
+694: 
+
+695:   // ── HUD Toggle Card ────────────────────────────────────────────────────────
+
+696: 
+
+697:   Widget _buildHUDToggleCard() {
+
+698:     return Container(
+
+699:       width: double.infinity,
+
+700:       padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
+
+701:       decoration: BoxDecoration(
+
+702:         color: const Color(0xFF1A1A1A),
+
+703:         borderRadius: BorderRadius.circular(16),
+
+704:         border: Border.all(color: const Color(0xFF2A2A2A)),
+
+705:       ),
+
+706:       child: Row(
+
+707:         mainAxisAlignment: MainAxisAlignment.spaceBetween,
+
+708:         children: [
+
+709:           const Row(
+
+710:             children: [
+
+711:               Icon(Icons.layers, color: Color(0xFFFFCC00), size: 24),
+
+712:               SizedBox(width: 12),
+
+713:               Column(
+
+714:                 crossAxisAlignment: CrossAxisAlignment.start,
+
+715:                 children: [
+
+716:                   Text('Show Floating Icon',
+
+717:                       style: TextStyle(
+
+718:                           fontSize: 14,
+
+719:                           fontWeight: FontWeight.bold,
+
+720:                           color: Colors.white)),
+
+721:                   Text('Display status over other apps',
+
+722:                       style: TextStyle(fontSize: 11, color: Color(0xFFB3B3B3))),
+
+723:                 ],
+
+724:               ),
+
+725:             ],
+
+726:           ),
+
+727:           Switch(
+
+728:             value: _isHUDEnabled,
+
+729:             onChanged: _setHUDEnabled,
+
+730:             activeColor: Colors.black,
+
+731:             activeTrackColor: const Color(0xFFFFCC00),
+
+732:             inactiveThumbColor: const Color(0xFF888888),
+
+733:             inactiveTrackColor: const Color(0xFF2A2A2A),
+
+734:           ),
+
+735:         ],
+
+736:       ),
+
+737:     );
+
+738:   }
+
+739: 
+
+740:   // ── Profiles Card ──────────────────────────────────────────────────────────
+
+741: 
+
+742:   Widget _buildProfilesCard() {
+
+743:     return Container(
+
+744:       width: double.infinity,
+
+745:       padding: const EdgeInsets.all(16),
+
+746:       decoration: BoxDecoration(
+
+747:         color: const Color(0xFF1A1A1A),
+
+748:         borderRadius: BorderRadius.circular(16),
+
+749:         border: Border.all(color: const Color(0xFF2A2A2A)),
+
+750:       ),
+
+751:       child: Column(
+
+752:         crossAxisAlignment: CrossAxisAlignment.start,
+
+753:         children: [
+
+754:           Row(
+
+755:             mainAxisAlignment: MainAxisAlignment.spaceBetween,
+
+756:             children: [
+
+757:               const Row(
+
+758:                 children: [
+
+759:                   Icon(Icons.location_on, color: Color(0xFFFFCC00), size: 20),
+
+760:                   SizedBox(width: 8),
+
+761:                   Text('Location Profiles',
+
+762:                       style: TextStyle(
+
+763:                           fontSize: 16,
+
+764:                           fontWeight: FontWeight.bold,
+
+765:                           color: Colors.white)),
+
+766:                 ],
+
+767:               ),
+
+768:               IconButton(
+
+769:                 icon: const Icon(Icons.add_circle, color: Color(0xFFFFCC00)),
+
+770:                 onPressed: () => _addOrEditProfile(),
+
+771:                 constraints: const BoxConstraints(),
+
+772:                 padding: EdgeInsets.zero,
+
+773:               ),
+
+774:             ],
+
+775:           ),
+
+776:           if (_profiles.isEmpty) ...[
+
+777:             const SizedBox(height: 12),
+
+778:             const Text('No profiles added. Add a profile for predefined locations.',
+
+779:                 style: TextStyle(fontSize: 12, color: Color(0xFFB3B3B3))),
+
+780:           ] else ...[
+
+781:             const SizedBox(height: 12),
+
+782:             ..._profiles.map((p) => _buildProfileItem(p)),
+
+783:           ]
+
+784:         ],
+
+785:       ),
+
+786:     );
+
+787:   }
+
+788: 
+
+789:   Widget _buildProfileItem(LocationProfile profile) {
+
+790:     return Container(
+
+791:       margin: const EdgeInsets.only(bottom: 8),
+
+792:       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+
+793:       decoration: BoxDecoration(
+
+794:         color: const Color(0xFF2A2A2A),
+
+795:         borderRadius: BorderRadius.circular(8),
+
+796:       ),
+
+797:       child: Row(
+
+798:         children: [
+
+799:           Expanded(
+
+800:             child: Column(
+
 The above content does NOT show the entire file contents. If you need to view any lines of the file which were not shown to complete your task, call this tool again to view those lines.

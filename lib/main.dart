@@ -21,22 +21,60 @@ import 'package:url_launcher/url_launcher.dart';
 import 'login_page.dart';
 
 import 'profile_page.dart';
+import 'location_profiles_page.dart';
 
 import 'package:socket_io_client/socket_io_client.dart' as IO;
 
 import 'package:shared_preferences/shared_preferences.dart';
 
-import 'package:speech_to_text/speech_to_text.dart' as stt;
 
 
 
 bool isTamil = false;
+bool isDarkMode = true;
+final ValueNotifier<bool> isDarkModeNotifier = ValueNotifier<bool>(true);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Unified Dynamic App Theme Colors (Guarantees Perfect Contrast in Both Modes)
+// ─────────────────────────────────────────────────────────────────────────────
+class AppThemeColors {
+  static bool get isDark => isDarkMode;
+
+  // Scaffold & App Bar
+  static Color get scaffoldBg => isDark ? const Color(0xFF0F0F0F) : const Color(0xFFF6F8FA);
+  static Color get appBarBg => isDark ? const Color(0xFF1A1A1A) : Colors.white;
+  static Color get appBarTitle => isDark ? Colors.white : const Color(0xFF111827);
+
+  // Cards & Containers
+  static Color get cardBg => isDark ? const Color(0xFF1A1A1A) : Colors.white;
+  static Color get cardInnerBg => isDark ? const Color(0xFF252525) : const Color(0xFFF8FAFC);
+  static Color get cardBorder => isDark ? const Color(0xFF2A2A2A) : const Color(0xFFE2E4E8);
+
+  // Selectors (Language / Theme buttons)
+  static Color get selectorBg => isDark ? const Color(0xFF1A1A1A) : const Color(0xFFEDF0F3);
+  static Color get selectorBorder => isDark ? const Color(0xFF2A2A2A) : const Color(0xFFD1D5DB);
+  static Color get selectorUnselectedText => isDark ? Colors.white : const Color(0xFF1E293B);
+
+  // Typography
+  static Color get textPrimary => isDark ? Colors.white : const Color(0xFF111827);
+  static Color get textSecondary => isDark ? const Color(0xFFB3B3B3) : const Color(0xFF64748B);
+  static Color get textMuted => isDark ? Colors.white54 : const Color(0xFF94A3B8);
+
+  // Badges
+  static Color get activeBadgeBg => isDark ? const Color(0xFF152A15) : const Color(0xFFE8F5E9);
+  static Color get inactiveBadgeBg => isDark ? const Color(0xFF2A2A2A) : const Color(0xFFF1F3F5);
+
+  // Dialogs
+  static Color get dialogBg => isDark ? const Color(0xFF1E1E1E) : Colors.white;
+}
 
 
 
 final Map<String, String> _ta = {
 
-  'Auto Clicker': 'ஆட்டோ கிளிக்கர்',
+  'Dark Mode': 'டார்க் மோட்',
+  'Light Mode': 'லைட் மோட்',
+  'Azhai Auto Clicker': 'ஆட்டோ கிளிக்கர்',
 
   'Open Profile': 'புரொஃபைல்',
 
@@ -49,6 +87,13 @@ final Map<String, String> _ta = {
   'Display status over other apps': 'மற்ற ஆப்கள் மீதும் நிலையைக் காட்டு',
 
   'Location Profiles': 'லொகேஷன் ப்ரொஃபைல்ஸ்',
+  'Manage Profiles': 'நிர்வகிக்க',
+  'Active Profiles': 'செயலில் உள்ளவை',
+  'No Location Profile Active': 'எந்த லொகேஷன் ப்ரொஃபைலும் செயலில் இல்லை',
+  'Tap to manage profiles or use Smart Fare': 'Profiles-ஐத் தொடவும் அல்லது Smart Fare பயன்படுத்தவும்',
+  'Confirm & Start': 'உறுதி செய்து தொடங்கு',
+  'Cancel': 'ரத்து செய்',
+
 
   'No profiles added. Add a profile for predefined locations.': 'இன்னும் ப்ரொஃபைல் சேர்க்கப்படவில்லை. மேலே புதிய ப்ரொஃபைலைச் சேர்க்கவும்.',
 
@@ -129,6 +174,8 @@ void main() async {
   final prefs = await SharedPreferences.getInstance();
 
   isTamil = prefs.getBool('isTamil') ?? false;
+  isDarkMode = prefs.getBool('isDarkMode') ?? true;
+  isDarkModeNotifier.value = isDarkMode;
 
   final bool isLoggedIn = prefs.getString('driverId') != null;
 
@@ -147,49 +194,55 @@ void main() async {
 // ─────────────────────────────────────────────────────────────────────────────
 
 class RapidoAutoClickerApp extends StatelessWidget {
-
   final Widget home;
-
   const RapidoAutoClickerApp({super.key, required this.home});
 
-
-
   @override
-
   Widget build(BuildContext context) {
-
-    return MaterialApp(
-
-      title: 'Auto Clicker',
-
-      debugShowCheckedModeBanner: false,
-
-      theme: ThemeData(
-
-        colorScheme: const ColorScheme.dark(
-
-          primary: Color(0xFFFFCC00),
-
-          onPrimary: Color(0xFF0F0F0F),
-
-          surface: Color(0xFF1E1E1E),
-
-          onSurface: Colors.white,
-
-        ),
-
-        scaffoldBackgroundColor: const Color(0xFF0F0F0F),
-
-        useMaterial3: true,
-
-      ),
-
-      home: home,
-
+    return ValueListenableBuilder<bool>(
+      valueListenable: isDarkModeNotifier,
+      builder: (context, isDark, child) {
+        return MaterialApp(
+          title: 'Azhai Auto Clicker',
+          debugShowCheckedModeBanner: false,
+          themeMode: isDark ? ThemeMode.dark : ThemeMode.light,
+          theme: ThemeData(
+            brightness: Brightness.light,
+            colorScheme: const ColorScheme.light(
+              primary: Color(0xFFFFCC00),
+              onPrimary: Colors.black,
+              surface: Colors.white,
+              onSurface: Color(0xFF111827),
+            ),
+            scaffoldBackgroundColor: const Color(0xFFF6F7F9),
+            appBarTheme: const AppBarTheme(
+              backgroundColor: Colors.white,
+              foregroundColor: Color(0xFF111827),
+              elevation: 0.5,
+            ),
+            useMaterial3: true,
+          ),
+          darkTheme: ThemeData(
+            brightness: Brightness.dark,
+            colorScheme: const ColorScheme.dark(
+              primary: Color(0xFFFFCC00),
+              onPrimary: Color(0xFF0F0F0F),
+              surface: Color(0xFF1E1E1E),
+              onSurface: Colors.white,
+            ),
+            scaffoldBackgroundColor: const Color(0xFF0F0F0F),
+            appBarTheme: const AppBarTheme(
+              backgroundColor: Color(0xFF1A1A1A),
+              foregroundColor: Colors.white,
+              elevation: 0,
+            ),
+            useMaterial3: true,
+          ),
+          home: home,
+        );
+      },
     );
-
   }
-
 }
 
 
@@ -312,69 +365,7 @@ const List<AppInfo> kApps = [
 
 
 
-// ─────────────────────────────────────────────────────────────────────────────
-
-// Location Profiles Model
-
-// ─────────────────────────────────────────────────────────────────────────────
-
-class LocationProfile {
-
-  String id;
-
-  String name;
-
-  String locations;
-
-  bool isActive;
-
-
-
-  LocationProfile({
-
-    required this.id,
-
-    required this.name,
-
-    required this.locations,
-
-    this.isActive = false,
-
-  });
-
-
-
-  Map<String, dynamic> toJson() => {
-
-        'id': id,
-
-        'name': name,
-
-        'locations': locations,
-
-        'isActive': isActive,
-
-      };
-
-
-
-  factory LocationProfile.fromJson(Map<String, dynamic> json) =>
-
-      LocationProfile(
-
-        id: json['id'],
-
-        name: json['name'],
-
-        locations: json['locations'],
-
-        isActive: json['isActive'] ?? false,
-
-      );
-
-}
-
-
+// LocationProfile model is imported from location_profiles_page.dart
 
 const _channel = MethodChannel('com.example.autoclicker/accessibility');
 
@@ -547,6 +538,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   // Location Profiles
 
   List<LocationProfile> _profiles = [];
+  final Map<String, bool> _hasUnsavedFilters = {};
 
 
 
@@ -925,7 +917,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
           child: AlertDialog(
 
-            backgroundColor: const Color(0xFF1E1E1E),
+            backgroundColor: AppThemeColors.dialogBg,
 
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
 
@@ -943,7 +935,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
                     isTamil ? 'விளம்பரம் பார்க்கவும்' : 'Watch Ad to Continue',
 
-                    style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 18),
+                    style: TextStyle(color: AppThemeColors.textPrimary, fontWeight: FontWeight.bold, fontSize: 18),
 
                   ),
 
@@ -989,7 +981,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
                             : 'Watch a short Rewarded AD in Azhai Partner to continue using AutoClicker.',
 
-                        style: const TextStyle(color: Colors.white, fontSize: 13),
+                        style: TextStyle(color: AppThemeColors.textPrimary, fontSize: 13),
 
                         textAlign: TextAlign.center,
 
@@ -1079,7 +1071,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
                     backgroundColor: const Color(0xFF00C853),
 
-                    foregroundColor: Colors.white,
+                    foregroundColor: AppThemeColors.textPrimary,
 
                     padding: const EdgeInsets.symmetric(vertical: 14),
 
@@ -1672,11 +1664,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
                 child: AlertDialog(
 
-                  backgroundColor: const Color(0xFF1E1E1E),
+                  backgroundColor: AppThemeColors.dialogBg,
 
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
 
-                  title: const Text('Free Trial Ended', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                  title: Text('Free Trial Ended', style: TextStyle(color: AppThemeColors.textPrimary, fontWeight: FontWeight.bold)),
 
                   content: SingleChildScrollView(
 
@@ -1770,7 +1762,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
                         backgroundColor: Colors.green,
 
-                        foregroundColor: Colors.white,
+                        foregroundColor: AppThemeColors.textPrimary,
 
                       ),
 
@@ -1982,7 +1974,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
           child: AlertDialog(
 
-            backgroundColor: const Color(0xFF1E1E1E),
+            backgroundColor: AppThemeColors.dialogBg,
 
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
 
@@ -1998,7 +1990,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
                   isTamil ? 'புதிய அப்டேட் தேவை!' : 'Update Required!',
 
-                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                  style: TextStyle(color: AppThemeColors.textPrimary, fontWeight: FontWeight.bold),
 
                 ),
 
@@ -2020,7 +2012,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
                   'v$version',
 
-                  style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+                  style: TextStyle(color: AppThemeColors.textPrimary, fontSize: 18, fontWeight: FontWeight.bold),
 
                 ),
 
@@ -2066,7 +2058,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
                     backgroundColor: Colors.blueAccent,
 
-                    foregroundColor: Colors.white,
+                    foregroundColor: AppThemeColors.textPrimary,
 
                     padding: const EdgeInsets.symmetric(vertical: 12),
 
@@ -2312,7 +2304,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
               return AlertDialog(
 
-                backgroundColor: const Color(0xFF1E1E1E),
+                backgroundColor: AppThemeColors.dialogBg,
 
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
 
@@ -2328,7 +2320,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
                       isTamil ? 'இன்றைய வரம்பு முடிந்தது!' : "Today's Limit Reached!",
 
-                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16),
+                      style: TextStyle(color: AppThemeColors.textPrimary, fontWeight: FontWeight.bold, fontSize: 16),
 
                     ),
 
@@ -2380,7 +2372,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
                             isTamil ? 'மீண்டும் இயக்க மீதமுள்ள நேரம்:' : 'Time remaining to unlock:',
 
-                            style: const TextStyle(color: Colors.white54, fontSize: 11),
+                            style: TextStyle(color: AppThemeColors.textMuted, fontSize: 11),
 
                           ),
 
@@ -2494,7 +2486,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
         builder: (context) => AlertDialog(
 
-          backgroundColor: const Color(0xFF1E1E1E),
+          backgroundColor: AppThemeColors.dialogBg,
 
           title: const Text('Payment Successful', style: TextStyle(color: Colors.green, fontWeight: FontWeight.bold)),
 
@@ -2538,7 +2530,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
         builder: (context) => AlertDialog(
 
-          backgroundColor: const Color(0xFF1E1E1E),
+          backgroundColor: AppThemeColors.dialogBg,
 
           title: const Text('Payment Failed', style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold)),
 
@@ -2655,342 +2647,311 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
 
   Future<void> _saveProfiles() async {
-
     final jsonStr = jsonEncode(_profiles.map((p) => p.toJson()).toList());
-
-    
-
-    // Collect active locations
-
-    final activeLocations = _profiles
-
-        .where((p) => p.isActive)
-
-        .map((p) => p.locations)
-
-        .where((locs) => locs.trim().isNotEmpty)
-
-        .join(',');
-
-
+    final activeLocsList = <String>[];
+    for (final p in _profiles) {
+      if (p.isActive) {
+        final split = p.locations.split(RegExp(r'[,;\n]')).map((s) => s.trim()).where((s) => s.isNotEmpty);
+        activeLocsList.addAll(split);
+      }
+    }
+    final activeLocations = activeLocsList.join(',');
 
     try {
-
       await _channel.invokeMethod('setLocationProfiles', {
-
         'profilesJson': jsonStr,
-
         'activeLocations': activeLocations,
-
       });
-
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('locationProfiles', jsonStr);
+      await prefs.setString('global_active_locations', activeLocations);
     } catch (_) {}
-
   }
 
-
-
-  void _addOrEditProfile([LocationProfile? profile]) {
-
-    final isEditing = profile != null;
-
-    final nameCtrl = TextEditingController(text: profile?.name ?? '');
-
-    final locsCtrl = TextEditingController(text: profile?.locations ?? '');
-
-    
-
-    stt.SpeechToText speech = stt.SpeechToText();
-
-    bool isListening = false;
-
-
-
-    showDialog(
-
-      context: context,
-
-      builder: (context) {
-
-        return StatefulBuilder(
-
-          builder: (context, setDialogState) {
-
-            
-
-            void _listen() async {
-
-              if (!isListening) {
-
-                bool available = await speech.initialize(
-
-                  onStatus: (val) {
-
-                    if (val == 'done' || val == 'notListening') {
-
-                      setDialogState(() => isListening = false);
-
-                    }
-
-                  },
-
-                  onError: (val) {
-
-                    setDialogState(() => isListening = false);
-
-                  },
-
-                );
-
-                if (available) {
-
-                  setDialogState(() => isListening = true);
-
-                  
-
-                  String existingText = locsCtrl.text.trim();
-
-                  if (existingText.isNotEmpty && !existingText.endsWith(',')) {
-
-                    existingText += ', ';
-
-                  }
-
-                  
-
-                  speech.listen(
-
-                    onResult: (val) {
-
-                      setDialogState(() {
-
-                        locsCtrl.text = existingText + val.recognizedWords;
-
-                        locsCtrl.selection = TextSelection.fromPosition(TextPosition(offset: locsCtrl.text.length));
-
-                      });
-
-                    },
-
-                  );
-
-                }
-
-              } else {
-
-                setDialogState(() => isListening = false);
-
-                speech.stop();
-
-              }
-
-            }
-
-
-
-            return AlertDialog(
-
-              backgroundColor: const Color(0xFF1A1A1A),
-
-              title: Text(isEditing ? 'Edit Profile' : 'New Profile',
-
-                  style: const TextStyle(color: Colors.white)),
-
-              content: Column(
-
-                mainAxisSize: MainAxisSize.min,
-
-                children: [
-
-                  TextField(
-
-                    controller: nameCtrl,
-
-                    style: const TextStyle(color: Colors.white),
-
-                    decoration: const InputDecoration(
-
-                      labelText: 'Profile Name (e.g. Home)',
-
-                      labelStyle: TextStyle(color: Colors.white54),
-
-                    ),
-
-                  ),
-
-                  const SizedBox(height: 12),
-
-                  Row(
-
-                    crossAxisAlignment: CrossAxisAlignment.end,
-
-                    children: [
-
-                      Expanded(
-
-                        child: TextField(
-
-                          controller: locsCtrl,
-
-                          style: const TextStyle(color: Colors.white),
-
-                          decoration: const InputDecoration(
-
-                            labelText: 'Locations (comma separated)',
-
-                            labelStyle: TextStyle(color: Colors.white54),
-
-                          ),
-
-                          maxLines: 3,
-
-                        ),
-
-                      ),
-
-                      IconButton(
-
-                        icon: Icon(
-
-                          isListening ? Icons.mic : Icons.mic_none,
-
-                          color: isListening ? Colors.red : const Color(0xFFFFCC00),
-
-                          size: 32,
-
-                        ),
-
-                        onPressed: _listen,
-
-                      ),
-
-                    ],
-
-                  ),
-
-                ],
-
-              ),
-
-              actions: [
-
-                TextButton(
-
-                  onPressed: () => Navigator.pop(context),
-
-                  child: const Text('CANCEL', style: TextStyle(color: Colors.white54)),
-
-                ),
-
-                ElevatedButton(
-
-                  style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFFFCC00)),
-
-                  onPressed: () {
-
-                    final name = nameCtrl.text.trim();
-
-                    final locs = locsCtrl.text.trim();
-
-                    if (name.isEmpty || locs.isEmpty) return;
-
-                    
-
-                    setState(() {
-
-                      if (isEditing) {
-
-                        profile.name = name;
-
-                        profile.locations = locs;
-
-                      } else {
-
-                        _profiles.add(LocationProfile(
-
-                          id: DateTime.now().millisecondsSinceEpoch.toString(),
-
-                          name: name,
-
-                          locations: locs,
-
-                        ));
-
-                      }
-
-                    });
-
-                    _saveProfiles();
-
-                    Navigator.pop(context);
-
-                  },
-
-                  child: const Text('SAVE', style: TextStyle(color: Colors.black)),
-
-                ),
-
-              ],
-
-            );
-
-          }
-
-        );
-
-      },
-
+  Future<void> _openLocationProfilesPage() async {
+    final updatedProfiles = await Navigator.push<List<LocationProfile>>(
+      context,
+      MaterialPageRoute(
+        builder: (context) => LocationProfilesPage(
+          profiles: _profiles,
+          isTamil: isTamil,
+          isDarkMode: isDarkMode,
+        ),
+      ),
     );
 
+    if (updatedProfiles != null && mounted) {
+      setState(() {
+        _profiles = updatedProfiles;
+      });
+      _saveProfiles();
+    }
   }
 
+  void _showAppEnableConfirmationDialog(AppInfo app) {
+    final isSmartFare = _smartFareModeEnabled[app.id] ?? false;
 
+    if (isSmartFare) {
+      final pMin = _pickupRanges[app.id]!.start.toStringAsFixed(1);
+      final pMax = _pickupRanges[app.id]!.end.toStringAsFixed(1);
+      final dMin = _dropRanges[app.id]!.start.toStringAsFixed(1);
+      final dMax = _dropRanges[app.id]!.end.toStringAsFixed(1);
+      final prMin = _priceRanges[app.id]!.start.toStringAsFixed(0);
+      final prMax = _priceRanges[app.id]!.end.toStringAsFixed(0);
 
-  void _toggleProfile(LocationProfile profile, bool value) {
+      showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: AppThemeColors.dialogBg,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: Row(
+            children: [
+              const Icon(Icons.flash_on, color: Color(0xFF2979FF)),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  '${app.name} - Smart Fare Confirm',
+                  style: TextStyle(color: AppThemeColors.textPrimary, fontSize: 18, fontWeight: FontWeight.bold),
+                ),
+              ),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF2979FF).withOpacity(0.15),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.info_outline, color: Color(0xFF2979FF), size: 16),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        isTamil
+                            ? 'Smart Fare ஆன்-ல் உள்ளது. Drop Location பெயர் பார்க்கப்படாது.'
+                            : 'Smart Fare is ON. Drop location name is NOT required.',
+                        style: const TextStyle(color: Color(0xFF2979FF), fontSize: 12),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 14),
+              Text(
+                isTamil ? 'சேமிக்கப்பட்ட ஃபில்டர்கள்:' : 'Saved Filter Range:',
+                style: const TextStyle(color: Colors.white70, fontWeight: FontWeight.bold, fontSize: 13),
+              ),
+              const SizedBox(height: 6),
+              _buildDialogInfoRow(Icons.directions_walk, 'Pickup', '$pMin - $pMax KM'),
+              _buildDialogInfoRow(Icons.pin_drop, 'Drop', '$dMin - $dMax KM'),
+              _buildDialogInfoRow(Icons.currency_rupee, 'Fare', '₹$prMin - ₹$prMax'),
+              const SizedBox(height: 12),
+              Text(
+                isTamil
+                    ? 'இந்த அளவுகளுக்குள் வரும் சவாரிகள் தானாக ஏற்றுக்கொள்ளப்படும்.'
+                    : 'Rides falling within these limits will be automatically accepted.',
+                style: const TextStyle(color: Colors.white54, fontSize: 11, fontStyle: FontStyle.italic),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: Text(t('Cancel'), style: const TextStyle(color: Colors.white54)),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF2979FF),
+                foregroundColor: AppThemeColors.textPrimary,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              ),
+              onPressed: () {
+                Navigator.pop(ctx);
+                _setAppEnabled(app.id, true);
+              },
+              child: Text(
+                isTamil ? 'உறுதி செய் (Confirm)' : 'CONFIRM & START',
+                style: const TextStyle(fontWeight: FontWeight.bold),
+              ),
+            ),
+          ],
+        ),
+      );
+    } else {
+      final activeProfiles = _profiles.where((p) => p.isActive).toList();
 
-    setState(() {
-
-      profile.isActive = value;
-
-      // STRICT: If any Location Profile is turned ON, disable Smart Fare mode all apps
-
-      if (value) {
-
-        for (final app in kApps) {
-
-          if (_smartFareModeEnabled[app.id] == true) {
-
-            _smartFareModeEnabled[app.id] = false;
-
-            _channel.invokeMethod('setSmartFareMode', {'appId': app.id, 'enabled': false});
-
-          }
-
-        }
-
+      if (activeProfiles.isEmpty) {
+        showDialog(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            backgroundColor: AppThemeColors.dialogBg,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            title: Row(
+              children: [
+                Icon(Icons.warning_amber_rounded, color: Color(0xFFFFCC00)),
+                SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'No Active Profile',
+                    style: TextStyle(color: AppThemeColors.textPrimary, fontSize: 18, fontWeight: FontWeight.bold),
+                  ),
+                ),
+              ],
+            ),
+            content: Text(
+              isTamil
+                  ? 'எந்த Location Profile-ம் ஆன்-ல் இல்லை! Auto Clicker இயங்க குறைந்தபட்சம் ஒரு Profile ஆன்-ல் இருக்க வேண்டும், அல்லது Smart Fare Mode-ஐப் பயன்படுத்தவும்.'
+                  : 'No Location Profile is turned ON! You must activate at least one profile to accept rides, or enable Smart Fare Mode.',
+              style: const TextStyle(color: Colors.white70, fontSize: 13),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: Text(t('Cancel'), style: const TextStyle(color: Colors.white54)),
+              ),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFFFFCC00),
+                  foregroundColor: Colors.black,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                ),
+                onPressed: () {
+                  Navigator.pop(ctx);
+                  _openLocationProfilesPage();
+                },
+                child: Text(
+                  isTamil ? 'Profiles திற' : 'Open Profiles',
+                  style: const TextStyle(fontWeight: FontWeight.bold),
+                ),
+              ),
+            ],
+          ),
+        );
+        return;
       }
 
-    });
+      final pMin = _pickupRanges[app.id]!.start.toStringAsFixed(1);
+      final pMax = _pickupRanges[app.id]!.end.toStringAsFixed(1);
+      final dMin = _dropRanges[app.id]!.start.toStringAsFixed(1);
+      final dMax = _dropRanges[app.id]!.end.toStringAsFixed(1);
+      final prMin = _priceRanges[app.id]!.start.toStringAsFixed(0);
+      final prMax = _priceRanges[app.id]!.end.toStringAsFixed(0);
 
-    _saveProfiles();
-
+      showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: AppThemeColors.dialogBg,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: Row(
+            children: [
+              const Icon(Icons.check_circle_outline, color: Color(0xFF00C853)),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  '${app.name} - Confirm Start',
+                  style: TextStyle(color: AppThemeColors.textPrimary, fontSize: 18, fontWeight: FontWeight.bold),
+                ),
+              ),
+            ],
+          ),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  isTamil ? 'செயலில் உள்ள லொகேஷன் ப்ரொஃபைல்கள்:' : 'Active Location Profiles:',
+                  style: const TextStyle(color: Color(0xFF00C853), fontWeight: FontWeight.bold, fontSize: 13),
+                ),
+                const SizedBox(height: 8),
+                ...activeProfiles.map((p) => Container(
+                      margin: const EdgeInsets.only(bottom: 6),
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF2A2A2A),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: const Color(0xFF00C853).withOpacity(0.4)),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            '🏡 ${p.name}',
+                            style: TextStyle(color: AppThemeColors.textPrimary, fontWeight: FontWeight.bold, fontSize: 13),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            p.locations,
+                            style: TextStyle(color: AppThemeColors.textSecondary, fontSize: 11),
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ],
+                      ),
+                    )),
+                const SizedBox(height: 10),
+                Text(
+                  isTamil ? 'ஃபில்டர் அளவுகள்:' : 'Filter Limits:',
+                  style: const TextStyle(color: Colors.white70, fontWeight: FontWeight.bold, fontSize: 12),
+                ),
+                const SizedBox(height: 6),
+                _buildDialogInfoRow(Icons.directions_walk, 'Pickup', '$pMin - $pMax KM'),
+                _buildDialogInfoRow(Icons.pin_drop, 'Drop', '$dMin - $dMax KM'),
+                _buildDialogInfoRow(Icons.currency_rupee, 'Fare', '₹$prMin - ₹$prMax'),
+                const SizedBox(height: 10),
+                Text(
+                  isTamil
+                      ? 'மேலே உள்ள Active Profile Drop Location மேட்ச் ஆனால் மட்டுமே சவாரி ஏற்றுக்கொள்ளப்படும்.'
+                      : 'Rides will ONLY be accepted if the drop location matches these active profiles and limits.',
+                  style: const TextStyle(color: Colors.white54, fontSize: 11, fontStyle: FontStyle.italic),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: Text(t('Cancel'), style: const TextStyle(color: Colors.white54)),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF00C853),
+                foregroundColor: AppThemeColors.textPrimary,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              ),
+              onPressed: () {
+                Navigator.pop(ctx);
+                _setAppEnabled(app.id, true);
+              },
+              child: Text(
+                isTamil ? 'உறுதி செய் (Confirm)' : 'CONFIRM & START',
+                style: const TextStyle(fontWeight: FontWeight.bold),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
   }
 
-
-
-  void _deleteProfile(LocationProfile profile) {
-
-    setState(() => _profiles.remove(profile));
-
-    _saveProfiles();
-
+  Widget _buildDialogInfoRow(IconData icon, String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Row(
+        children: [
+          Icon(icon, size: 14, color: Colors.white54),
+          const SizedBox(width: 6),
+          Text('$label: ', style: const TextStyle(color: Colors.white54, fontSize: 11)),
+          Text(value, style: TextStyle(color: AppThemeColors.textPrimary, fontSize: 11, fontWeight: FontWeight.bold)),
+        ],
+      ),
+    );
   }
-
-
-
-  // ────────────────────────
-
-
 
   Future<void> _setAppEnabled(String appId, bool value) async {
 
@@ -3036,19 +2997,19 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
       builder: (ctx) => AlertDialog(
 
-        backgroundColor: const Color(0xFF1E1E1E),
+        backgroundColor: AppThemeColors.dialogBg,
 
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
 
         title: Row(
 
-          children: const [
+          children: [
 
             Icon(Icons.warning_amber_rounded, color: Colors.orangeAccent, size: 26),
 
             SizedBox(width: 8),
 
-            Text('Mode Conflict!', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16)),
+            Text('Mode Conflict!', style: TextStyle(color: AppThemeColors.textPrimary, fontWeight: FontWeight.bold, fontSize: 16)),
 
           ],
 
@@ -3176,13 +3137,13 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   Widget build(BuildContext context) {
 
-    return Scaffold(
-
+        return Scaffold(
+      backgroundColor: isDarkMode ? const Color(0xFF0F0F0F) : const Color(0xFFF6F7F9),
       appBar: AppBar(
-
-        title: Text(t('Auto Clicker'), style: TextStyle(fontWeight: FontWeight.bold)),
-
-        backgroundColor: const Color(0xFF1A1A1A),
+        title: Text(t('Azhai Auto Clicker'), style: TextStyle(fontWeight: FontWeight.bold, color: AppThemeColors.appBarTitle)),
+        backgroundColor: AppThemeColors.appBarBg,
+        elevation: isDarkMode ? 0 : 0.5,
+        systemOverlayStyle: isDarkMode ? SystemUiOverlayStyle.light : SystemUiOverlayStyle.dark,
 
         actions: [
 
@@ -3239,7 +3200,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
             children: [
 
               _buildLanguageSelector(),
-
+              const SizedBox(height: 8),
+              _buildThemeSelector(),
               const SizedBox(height: 12),
 
               _buildHeader(),
@@ -3266,12 +3228,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
                   icon: const Icon(Icons.history, size: 18),
 
-                  label: Text(t('Open Ride History Page'), style: TextStyle(fontWeight: FontWeight.bold)),
-
+                  label: Text(t('Open Ride History Page'), style: const TextStyle(fontWeight: FontWeight.bold)),
                   style: ElevatedButton.styleFrom(
-
                     backgroundColor: const Color(0xFFFFCC00),
-
                     foregroundColor: Colors.black,
 
                     padding: const EdgeInsets.symmetric(vertical: 14),
@@ -3314,9 +3273,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
                 t('Apps'),
 
-                style: const TextStyle(
+                style: TextStyle(
 
-                    fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white),
+                    fontSize: 18, fontWeight: FontWeight.bold, color: AppThemeColors.textPrimary),
 
               ),
 
@@ -3353,172 +3312,146 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
 
   Widget _buildLanguageSelector() {
-
     return Container(
-
       width: double.infinity,
-
       decoration: BoxDecoration(
-
-        color: const Color(0xFF1A1A1A),
-
+        color: AppThemeColors.cardBg,
         borderRadius: BorderRadius.circular(12),
-
-        border: Border.all(color: const Color(0xFF2A2A2A)),
-
+        border: Border.all(color: isDarkMode ? const Color(0xFF2A2A2A) : const Color(0xFFE2E4E8)),
       ),
-
       child: SegmentedButton<bool>(
-
         style: ButtonStyle(
-
           backgroundColor: MaterialStateProperty.resolveWith<Color>((Set<MaterialState> states) {
-
             if (states.contains(MaterialState.selected)) return const Color(0xFFFFCC00);
-
             return Colors.transparent;
-
           }),
-
           foregroundColor: MaterialStateProperty.resolveWith<Color>((Set<MaterialState> states) {
-
             if (states.contains(MaterialState.selected)) return Colors.black;
-
-            return Colors.white;
-
+            return isDarkMode ? Colors.white : const Color(0xFF111827);
           }),
-
         ),
-
-        segments: [
-
+        segments: const [
           ButtonSegment(value: false, label: Text('English', style: TextStyle(fontWeight: FontWeight.bold))),
-
           ButtonSegment(value: true, label: Text('தமிழ்', style: TextStyle(fontWeight: FontWeight.bold))),
-
         ],
-
         selected: {isTamil},
-
         onSelectionChanged: (Set<bool> newSelection) async {
-
           setState(() {
-
             isTamil = newSelection.first;
-
           });
-
           final prefs = await SharedPreferences.getInstance();
-
           await prefs.setBool('isTamil', isTamil);
-
         },
-
       ),
-
     );
-
   }
 
-
-
-  // ── Header ────────────────────────────────────────────────────────────────
-
-
+  Widget _buildThemeSelector() {
+    return Container(
+      width: double.infinity,
+      decoration: BoxDecoration(
+        color: AppThemeColors.cardBg,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: isDarkMode ? const Color(0xFF2A2A2A) : const Color(0xFFE2E4E8)),
+      ),
+      child: SegmentedButton<bool>(
+        style: ButtonStyle(
+          backgroundColor: MaterialStateProperty.resolveWith<Color>((Set<MaterialState> states) {
+            if (states.contains(MaterialState.selected)) return const Color(0xFFFFCC00);
+            return Colors.transparent;
+          }),
+          foregroundColor: MaterialStateProperty.resolveWith<Color>((Set<MaterialState> states) {
+            if (states.contains(MaterialState.selected)) return Colors.black;
+            return isDarkMode ? Colors.white : const Color(0xFF111827);
+          }),
+        ),
+        segments: [
+          ButtonSegment(
+            value: true,
+            icon: const Icon(Icons.dark_mode, size: 16),
+            label: Text(t('Dark Mode'), style: const TextStyle(fontWeight: FontWeight.bold)),
+          ),
+          ButtonSegment(
+            value: false,
+            icon: const Icon(Icons.light_mode, size: 16),
+            label: Text(t('Light Mode'), style: const TextStyle(fontWeight: FontWeight.bold)),
+          ),
+        ],
+        selected: {isDarkMode},
+        onSelectionChanged: (Set<bool> newSelection) async {
+          setState(() {
+            isDarkMode = newSelection.first;
+            isDarkModeNotifier.value = isDarkMode;
+          });
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setBool('isDarkMode', isDarkMode);
+        },
+      ),
+    );
+  }
 
   Widget _buildHeader() {
-
     final activeCount = _appEnabled.values.where((v) => v).length;
 
     return Row(
-
       children: [
-
         Expanded(
-
           child: Column(
-
             crossAxisAlignment: CrossAxisAlignment.start,
-
             children: [
-
-              Text(t('Auto Clicker'),
-
-                  style: TextStyle(
-
-                      fontSize: 26, fontWeight: FontWeight.bold, color: Colors.white)),
-
-              Text(t('Ride Accept Automation'),
-
-                  style: TextStyle(fontSize: 13, color: Color(0xFFB3B3B3))),
-
+              Text(
+                t('Auto Clicker'),
+                style: TextStyle(
+                  fontSize: 26,
+                  fontWeight: FontWeight.bold,
+                  color: AppThemeColors.textPrimary,
+                ),
+              ),
+              Text(
+                t('Ride Accept Automation'),
+                style: TextStyle(fontSize: 13, color: AppThemeColors.textSecondary),
+              ),
             ],
-
           ),
-
         ),
-
         const SizedBox(width: 8),
-
         Container(
-
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-
           decoration: BoxDecoration(
-
-            color: activeCount > 0
-
-                ? const Color(0xFF152A15)
-
-                : const Color(0xFF2A2A2A),
-
+            color: activeCount > 0 ? AppThemeColors.activeBadgeBg : AppThemeColors.inactiveBadgeBg,
             borderRadius: BorderRadius.circular(20),
-
             border: Border.all(
-
-              color: activeCount > 0
-
-                  ? const Color(0xFF4CAF50)
-
-                  : const Color(0xFF444444),
-
+              color: activeCount > 0 ? const Color(0xFF4CAF50) : AppThemeColors.cardBorder,
             ),
-
           ),
-
-          child: Text(
-
-            '$activeCount ${t('Active')}',
-
-            style: TextStyle(
-
-                fontSize: 12,
-
-                fontWeight: FontWeight.bold,
-
-                color: activeCount > 0
-
-                    ? const Color(0xFF4CAF50)
-
-                    : const Color(0xFF888888)),
-
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 8,
+                height: 8,
+                decoration: BoxDecoration(
+                  color: activeCount > 0 ? const Color(0xFF4CAF50) : AppThemeColors.textMuted,
+                  shape: BoxShape.circle,
+                ),
+              ),
+              const SizedBox(width: 6),
+              Text(
+                '$activeCount ${t("Active")}',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
+                  color: activeCount > 0
+                      ? (isDarkMode ? const Color(0xFF4CAF50) : const Color(0xFF1B5E20))
+                      : AppThemeColors.textMuted,
+                ),
+              ),
+            ],
           ),
-
         ),
-
       ],
-
     );
-
   }
-
-
-
-  // ── HUD Toggle Card ────────────────────────────────────────────────────────
-
-
-
-
 
   Widget _buildBankingModeCard() {
 
@@ -3532,11 +3465,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
         decoration: BoxDecoration(
 
-          color: const Color(0xFF142414),
+          color: isDarkMode ? const Color(0xFF142414) : const Color(0xFFE8F5E9),
 
           borderRadius: BorderRadius.circular(14),
 
-          border: Border.all(color: const Color(0xFF1B5E20)),
+          border: Border.all(color: isDarkMode ? const Color(0xFF1B5E20) : const Color(0xFF81C784)),
 
         ),
 
@@ -3574,7 +3507,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
                         : 'Accessibility is turned off. Banking apps will open without warnings.',
 
-                    style: const TextStyle(color: Colors.white70, fontSize: 11),
+                    style: TextStyle(color: AppThemeColors.textSecondary, fontSize: 11),
 
                   ),
 
@@ -3602,11 +3535,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
       decoration: BoxDecoration(
 
-        color: const Color(0xFF1A1A1A),
-
+        color: AppThemeColors.cardBg,
         borderRadius: BorderRadius.circular(14),
-
-        border: Border.all(color: const Color(0xFF2E3A4E)),
+        border: Border.all(color: isDarkMode ? const Color(0xFF2E3A4E) : const Color(0xFFE2E4E8)),
 
       ),
 
@@ -3644,7 +3575,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
                   isTamil ? 'வங்கி செயலிகள் (Banking Mode)' : 'Banking Apps (GPay / PhonePe)',
 
-                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
+                  style: TextStyle(color: AppThemeColors.textPrimary, fontWeight: FontWeight.bold, fontSize: 14),
 
                 ),
 
@@ -3654,7 +3585,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
                   isTamil ? 'GPay/PhonePe பயன்படுத்த 1-கிளிக்கில் ஆஃப் செய்யலாம்' : '1-tap disable before opening bank apps',
 
-                  style: const TextStyle(color: Colors.white60, fontSize: 11),
+                  style: TextStyle(color: isDarkMode ? Colors.white60 : const Color(0xFF6B7280), fontSize: 11),
 
                 ),
 
@@ -3670,9 +3601,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
             style: ElevatedButton.styleFrom(
 
-              backgroundColor: const Color(0xFF1E3A5F),
-
-              foregroundColor: const Color(0xFF64B5F6),
+              backgroundColor: isDarkMode ? const Color(0xFF1E3A5F) : const Color(0xFFE3F2FD),
+              foregroundColor: isDarkMode ? const Color(0xFF64B5F6) : const Color(0xFF1976D2),
 
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
 
@@ -3705,430 +3635,321 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
 
   Widget _buildHUDToggleCard() {
-
     return Container(
-
       width: double.infinity,
-
       padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
-
       decoration: BoxDecoration(
-
-        color: const Color(0xFF1A1A1A),
-
+        color: AppThemeColors.cardBg,
         borderRadius: BorderRadius.circular(16),
-
-        border: Border.all(color: const Color(0xFF2A2A2A)),
-
+        border: Border.all(color: AppThemeColors.cardBorder),
       ),
-
       child: Row(
-
         children: [
-
-          Icon(Icons.layers, color: Color(0xFFFFCC00), size: 24),
-
-          SizedBox(width: 12),
-
+          const Icon(Icons.layers, color: Color(0xFFFFCC00), size: 24),
+          const SizedBox(width: 12),
           Expanded(
-
             child: Column(
-
               crossAxisAlignment: CrossAxisAlignment.start,
-
               children: [
-
-                Text(t('Show Floating Icon'),
-
-                    style: TextStyle(
-
-                        fontSize: 14,
-
-                        fontWeight: FontWeight.bold,
-
-                        color: Colors.white)),
-
-                Text(t('Display status over other apps'),
-
-                    style: TextStyle(fontSize: 11, color: Color(0xFFB3B3B3))),
-
+                Text(
+                  t('Show Floating Icon'),
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.bold,
+                    color: AppThemeColors.textPrimary,
+                  ),
+                ),
+                Text(
+                  t('Display status over other apps'),
+                  style: TextStyle(fontSize: 11, color: AppThemeColors.textSecondary),
+                ),
               ],
-
             ),
-
           ),
-
           Switch(
-
             value: _isHUDEnabled,
-
             onChanged: _setHUDEnabled,
-
             activeColor: Colors.black,
-
             activeTrackColor: const Color(0xFFFFCC00),
-
-            inactiveThumbColor: const Color(0xFF888888),
-
-            inactiveTrackColor: const Color(0xFF2A2A2A),
-
+            inactiveThumbColor: isDarkMode ? const Color(0xFF888888) : const Color(0xFF9E9E9E),
+            inactiveTrackColor: isDarkMode ? const Color(0xFF2A2A2A) : const Color(0xFFD1D5DB),
           ),
-
         ],
-
       ),
-
     );
-
   }
-
-
-
-  // ── Profiles Card ──────────────────────────────────────────────────────────
-
-
 
   Widget _buildProfilesCard() {
+    final activeProfiles = _profiles.where((p) => p.isActive).toList();
 
     return Container(
-
       width: double.infinity,
-
       padding: const EdgeInsets.all(16),
-
       decoration: BoxDecoration(
-
-        color: const Color(0xFF1A1A1A),
-
+        color: AppThemeColors.cardBg,
         borderRadius: BorderRadius.circular(16),
-
-        border: Border.all(color: const Color(0xFF2A2A2A)),
-
+        border: Border.all(
+          color: activeProfiles.isNotEmpty ? const Color(0xFF00C853).withOpacity(0.5) : AppThemeColors.cardBorder,
+        ),
       ),
-
       child: Column(
-
         crossAxisAlignment: CrossAxisAlignment.start,
-
         children: [
-
           Row(
-
             children: [
-
-              Icon(Icons.location_on, color: Color(0xFFFFCC00), size: 20),
-
-              SizedBox(width: 8),
-
+              const Icon(Icons.location_on, color: Color(0xFFFFCC00), size: 20),
+              const SizedBox(width: 8),
               Expanded(
-
-                child: Text(t('Location Profiles'),
-
-                    style: TextStyle(
-
-                        fontSize: 16,
-
-                        fontWeight: FontWeight.bold,
-
-                        color: Colors.white)),
-
+                child: Text(
+                  t('Location Profiles'),
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                    color: AppThemeColors.textPrimary,
+                  ),
+                ),
               ),
-
-              IconButton(
-
-                icon: const Icon(Icons.add_circle, color: Color(0xFFFFCC00)),
-
-                onPressed: () => _addOrEditProfile(),
-
-                constraints: const BoxConstraints(),
-
-                padding: EdgeInsets.zero,
-
+              TextButton.icon(
+                icon: const Icon(Icons.tune, color: Color(0xFFFFCC00), size: 16),
+                label: Text(
+                  t('Manage Profiles'),
+                  style: TextStyle(
+                    color: isDarkMode ? const Color(0xFFFFCC00) : const Color(0xFFB45309),
+                    fontWeight: FontWeight.bold,
+                    fontSize: 12,
+                  ),
+                ),
+                style: TextButton.styleFrom(
+                  backgroundColor: isDarkMode ? const Color(0xFF2A2A2A) : const Color(0xFFFEF3C7),
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                ),
+                onPressed: _openLocationProfilesPage,
               ),
-
             ],
-
           ),
-
-          if (_profiles.isEmpty) ...[
-
-            const SizedBox(height: 12),
-
-            Text(t('No profiles added. Add a profile for predefined locations.'),
-
-                style: TextStyle(fontSize: 12, color: Color(0xFFB3B3B3))),
-
-          ] else ...[
-
-            const SizedBox(height: 12),
-
-            ..._profiles.map((p) => _buildProfileItem(p)),
-
-          ]
-
-        ],
-
-      ),
-
-    );
-
-  }
-
-
-
-  Widget _buildProfileItem(LocationProfile profile) {
-
-    return Container(
-
-      margin: const EdgeInsets.only(bottom: 8),
-
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-
-      decoration: BoxDecoration(
-
-        color: const Color(0xFF2A2A2A),
-
-        borderRadius: BorderRadius.circular(8),
-
-      ),
-
-      child: Row(
-
-        children: [
-
-          Expanded(
-
-            child: Column(
-
-              crossAxisAlignment: CrossAxisAlignment.start,
-
-              children: [
-
-                Text(profile.name,
-
-                    style: const TextStyle(
-
-                        fontSize: 14,
-
-                        fontWeight: FontWeight.bold,
-
-                        color: Colors.white)),
-
-                Text(profile.locations,
-
-                    style: const TextStyle(fontSize: 11, color: Color(0xFFB3B3B3)),
-
-                    maxLines: 1,
-
-                    overflow: TextOverflow.ellipsis),
-
-              ],
-
+          const SizedBox(height: 12),
+          if (activeProfiles.isNotEmpty) ...[
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                color: isDarkMode ? const Color(0xFF152A15) : const Color(0xFFDCFCE7),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: const Color(0xFF00C853).withOpacity(0.4)),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.check_circle, color: Color(0xFF00C853), size: 14),
+                  const SizedBox(width: 6),
+                  Text(
+                    '${t("Active Profiles")} (${activeProfiles.length})',
+                    style: TextStyle(
+                      color: isDarkMode ? const Color(0xFF00C853) : const Color(0xFF166534),
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
+              ),
             ),
-
-          ),
-
-          IconButton(
-
-            icon: const Icon(Icons.edit, size: 16, color: Colors.white54),
-
-            onPressed: () => _addOrEditProfile(profile),
-
-            constraints: const BoxConstraints(),
-
-            padding: const EdgeInsets.symmetric(horizontal: 4),
-
-          ),
-
-          IconButton(
-
-            icon: const Icon(Icons.delete, size: 16, color: Colors.white54),
-
-            onPressed: () => _deleteProfile(profile),
-
-            constraints: const BoxConstraints(),
-
-            padding: const EdgeInsets.symmetric(horizontal: 4),
-
-          ),
-
-          Switch(
-
-            value: profile.isActive,
-
-            onChanged: (v) => _toggleProfile(profile, v),
-
-            activeColor: Colors.black,
-
-            activeTrackColor: const Color(0xFFFFCC00),
-
-            inactiveThumbColor: const Color(0xFF888888),
-
-            inactiveTrackColor: const Color(0xFF444444),
-
-          ),
-
+            const SizedBox(height: 10),
+            ...activeProfiles.map((p) => Container(
+                  margin: const EdgeInsets.only(bottom: 8),
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: AppThemeColors.cardInnerBg,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: const Color(0xFF00C853).withOpacity(isDarkMode ? 0.2 : 0.4)),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.place, size: 16, color: Color(0xFF00C853)),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              p.name,
+                              style: TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.bold,
+                                color: AppThemeColors.textPrimary,
+                              ),
+                            ),
+                            Text(
+                              p.locations,
+                              style: TextStyle(fontSize: 11, color: AppThemeColors.textSecondary),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ],
+                        ),
+                      ),
+                      const Icon(Icons.check, size: 16, color: Color(0xFF00C853)),
+                    ],
+                  ),
+                )),
+            const SizedBox(height: 4),
+            Text(
+              isTamil
+                  ? 'மேலே உள்ள Active Profile Drop Location மேட்ச் ஆனால் மட்டுமே சவாரி ஏற்றுக்கொள்ளப்படும்.'
+                  : 'Rides will ONLY be accepted for drops matching these active profiles.',
+              style: TextStyle(fontSize: 11, color: AppThemeColors.textMuted, fontStyle: FontStyle.italic),
+            ),
+          ] else ...[
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: isDarkMode ? const Color(0xFF2A2000) : const Color(0xFFFFFBEB),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: const Color(0xFFFFCC00).withOpacity(0.4)),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.warning_amber_rounded, color: Color(0xFFFFCC00), size: 18),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          t('No Location Profile Active'),
+                          style: TextStyle(
+                            color: isDarkMode ? Colors.white : const Color(0xFF92400E),
+                            fontWeight: FontWeight.bold,
+                            fontSize: 12,
+                          ),
+                        ),
+                        Text(
+                          t('Tap to manage profiles or use Smart Fare'),
+                          style: TextStyle(
+                            color: isDarkMode ? const Color(0xFFB3B3B3) : const Color(0xFF78350F),
+                            fontSize: 11,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
         ],
-
       ),
-
     );
-
   }
-
-
 
   // ── Overall Status Card ───────────────────────────────────────────────────
 
 
 
   Widget _buildOverallStatusCard() {
-
     return Container(
-
       width: double.infinity,
-
       padding: const EdgeInsets.all(18),
-
       decoration: BoxDecoration(
-
-        color: const Color(0xFF1A1A1A),
-
+        color: AppThemeColors.cardBg,
         borderRadius: BorderRadius.circular(16),
-
-        border: Border.all(color: const Color(0xFF2A2A2A)),
-
+        border: Border.all(color: AppThemeColors.cardBorder),
       ),
-
       child: Column(
-
         children: [
-
           Row(
-
             children: [
-
               Expanded(
-
                 child: Column(
-
                   children: [
-
                     Text('$_totalAccepted',
-
-                        style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: Color(0xFFFFCC00))),
-
-                    Text(t('Accepted'), style: TextStyle(fontSize: 11, color: Color(0xFFB3B3B3))),
-
+                        style: TextStyle(
+                          fontSize: 28,
+                          fontWeight: FontWeight.bold,
+                          color: isDarkMode ? const Color(0xFFFFCC00) : const Color(0xFFD97706),
+                        )),
+                    Text(t('Accepted'), style: TextStyle(fontSize: 11, color: AppThemeColors.textSecondary)),
                   ],
-
                 ),
-
               ),
-
-              Container(width: 1, height: 40, color: const Color(0xFF2A2A2A)),
-
+              Container(width: 1, height: 40, color: AppThemeColors.cardBorder),
               Expanded(
-
                 child: Column(
-
                   children: [
-
                     Text('$_totalSkipped',
-
-                        style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: Colors.redAccent)),
-
-                    Text(t('Skipped'), style: TextStyle(fontSize: 11, color: Color(0xFFB3B3B3))),
-
+                        style: TextStyle(
+                          fontSize: 28,
+                          fontWeight: FontWeight.bold,
+                          color: isDarkMode ? Colors.redAccent : const Color(0xFFDC2626),
+                        )),
+                    Text(t('Skipped'), style: TextStyle(fontSize: 11, color: AppThemeColors.textSecondary)),
                   ],
-
                 ),
-
               ),
-
-              Container(width: 1, height: 40, color: const Color(0xFF2A2A2A)),
-
+              Container(width: 1, height: 40, color: AppThemeColors.cardBorder),
               Expanded(
-
                 child: Column(
-
                   children: [
-
                     Text('₹${_dailyEarnings.toStringAsFixed(0)}',
-
-                        style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: Colors.greenAccent)),
-
-                    Text(isTamil ? 'இன்றைய வருமானம்' : "Today's Earning", style: const TextStyle(fontSize: 11, color: Color(0xFFB3B3B3))),
-
-                    Text('Total: ₹${_totalEarnings.toStringAsFixed(0)}', style: const TextStyle(fontSize: 9, color: Colors.white38)),
-
+                        style: TextStyle(
+                          fontSize: 28,
+                          fontWeight: FontWeight.bold,
+                          color: isDarkMode ? Colors.greenAccent : const Color(0xFF16A34A),
+                        )),
+                    Text(isTamil ? 'இன்றைய வருமானம்' : "Today's Earning", style: TextStyle(fontSize: 11, color: AppThemeColors.textSecondary)),
+                    Text('Total: ₹${_totalEarnings.toStringAsFixed(0)}', style: TextStyle(fontSize: 9, color: AppThemeColors.textMuted)),
                   ],
-
                 ),
-
               ),
-
             ],
-
           ),
-
           const SizedBox(height: 16),
-
-          const Divider(color: Color(0xFF2A2A2A), height: 1),
-
+          Divider(color: AppThemeColors.cardBorder, height: 1),
           const SizedBox(height: 16),
-
           Row(
-
             children: [
-
               Expanded(
-
                 child: Column(
-
                   crossAxisAlignment: CrossAxisAlignment.start,
-
                   children: [
-
-                    const Text('Last Activity',
-
-                        style: TextStyle(fontSize: 11, color: Color(0xFFB3B3B3))),
-
-                    const SizedBox(height: 4),
-
+                    Text('Last Activity',
+                        style: TextStyle(fontSize: 11, color: AppThemeColors.textSecondary)),
+                    const SizedBox(height: 2),
                     Text(
-
                       _lastActivity,
-
-                      style: const TextStyle(fontSize: 12, color: Colors.white),
-
+                      style: TextStyle(fontSize: 12, color: AppThemeColors.textPrimary),
                       maxLines: 2,
-
                       overflow: TextOverflow.ellipsis,
-
                     ),
-
                   ],
-
                 ),
-
               ),
-
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    Text(t('Status'), style: TextStyle(fontSize: 11, color: AppThemeColors.textSecondary)),
+                    const SizedBox(height: 2),
+                    Text(
+                      _serviceActive ? t('Active') : 'Inactive',
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.bold,
+                        color: _serviceActive
+                            ? (isDarkMode ? const Color(0xFF00C853) : const Color(0xFF15803D))
+                            : (isDarkMode ? Colors.redAccent : const Color(0xFFDC2626)),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             ],
-
           ),
-
         ],
-
       ),
-
     );
-
   }
 
 
-
-  // ── Accessibility Warning ─────────────────────────────────────────────────
 
 
 
@@ -4142,11 +3963,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
       decoration: BoxDecoration(
 
-        color: const Color(0xFF2A1515),
+        color: isDarkMode ? const Color(0xFF2A1515) : const Color(0xFFFEF2F2),
 
         borderRadius: BorderRadius.circular(14),
 
-        border: Border.all(color: const Color(0xFF5A2020)),
+        border: Border.all(color: isDarkMode ? const Color(0xFF5A2020) : const Color(0xFFFECACA)),
 
       ),
 
@@ -4160,7 +3981,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
             children: [
 
-              Icon(Icons.warning_amber_rounded, color: Color(0xFFF44336), size: 20),
+              Icon(Icons.warning_amber_rounded,
+                  color: isDarkMode ? const Color(0xFFF44336) : const Color(0xFFDC2626), size: 20),
 
               SizedBox(width: 8),
 
@@ -4168,7 +3990,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
                   style: TextStyle(
 
-                      color: Color(0xFFF44336),
+                      color: isDarkMode ? const Color(0xFFF44336) : const Color(0xFFDC2626),
 
                       fontWeight: FontWeight.bold,
 
@@ -4180,11 +4002,13 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
           const SizedBox(height: 8),
 
-          const Text(
+          Text(
 
             '1️⃣ Open Settings → 2️⃣ Installed Apps → 3️⃣ Auto Clicker → 4️⃣ Enable',
 
-            style: TextStyle(fontSize: 12, color: Color(0xFFB3B3B3)),
+            style: TextStyle(
+                fontSize: 12,
+                color: isDarkMode ? const Color(0xFFB3B3B3) : const Color(0xFF991B1B)),
 
           ),
 
@@ -4237,6 +4061,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   Widget _buildAppCard(AppInfo app) {
 
     final isEnabled = _appEnabled[app.id] ?? false;
+    final effectivePrimaryColor = (app.id == 'uber' && !isDarkMode) ? const Color(0xFF111827) : app.primaryColor;
 
 
 
@@ -4246,13 +4071,13 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
       decoration: BoxDecoration(
 
-        color: isEnabled ? app.cardColor : const Color(0xFF1A1A1A),
+        color: isEnabled ? (isDarkMode ? app.cardColor : Colors.white) : (isDarkMode ? const Color(0xFF1A1A1A) : Colors.white),
 
         borderRadius: BorderRadius.circular(16),
 
         border: Border.all(
 
-          color: isEnabled ? app.primaryColor.withOpacity(0.5) : const Color(0xFF2A2A2A),
+          color: isEnabled ? effectivePrimaryColor.withOpacity(isDarkMode ? 0.5 : 0.8) : (isDarkMode ? const Color(0xFF2A2A2A) : const Color(0xFFE2E4E8)),
 
           width: isEnabled ? 1.5 : 1,
 
@@ -4290,13 +4115,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
                       Text(app.name,
 
-                          style: const TextStyle(
+                          style: TextStyle(
 
                               fontSize: 17,
-
                               fontWeight: FontWeight.bold,
-
-                              color: Colors.white)),
+                              color: AppThemeColors.textPrimary)),
 
                       Text(
 
@@ -4306,7 +4129,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
                             fontSize: 12,
 
-                            color: !app.isAvailable ? Colors.redAccent : (isEnabled ? app.primaryColor : const Color(0xFF666666))),
+                            color: !app.isAvailable ? Colors.redAccent : (isEnabled ? effectivePrimaryColor : isDarkMode ? const Color(0xFF666666) : const Color(0xFF9CA3AF))),
 
                       ),
 
@@ -4345,13 +4168,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                       }
 
                       if (!_serviceActive) {
-
                         _showSnack('First enable Accessibility Service!');
-
                         return;
-
                       }
-
+                      _showAppEnableConfirmationDialog(app);
+                      return;
                     }
 
                     _setAppEnabled(app.id, val);
@@ -4414,7 +4235,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
                 children: [
 
-                  const Text('Touch protection ', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+                  Text('Touch protection ', style: TextStyle(color: AppThemeColors.textPrimary, fontSize: 16, fontWeight: FontWeight.bold)),
 
                   Switch(
 
@@ -4463,10 +4284,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                 decoration: BoxDecoration(
 
                   color: (_smartFareModeEnabled[app.id] ?? false)
-
-                      ? const Color(0xFF0A1628)
-
-                      : const Color(0xFF222222),
+                      ? (isDarkMode ? const Color(0xFF0A1628) : const Color(0xFFEFF6FF))
+                      : (isDarkMode ? const Color(0xFF222222) : const Color(0xFFF9FAFB)),
 
                   borderRadius: BorderRadius.circular(12),
 
@@ -4474,9 +4293,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
                     color: (_smartFareModeEnabled[app.id] ?? false)
 
-                        ? const Color(0xFF2979FF).withOpacity(0.7)
+                        ? (isDarkMode ? const Color(0xFF2979FF).withOpacity(0.7) : const Color(0xFF3B82F6))
 
-                        : Colors.white12,
+                        : (isDarkMode ? Colors.white12 : const Color(0xFFE2E4E8)),
 
                     width: 1.2,
 
@@ -4494,9 +4313,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
                       color: (_smartFareModeEnabled[app.id] ?? false)
 
-                          ? const Color(0xFF2979FF)
+                          ? (isDarkMode ? const Color(0xFF2979FF) : const Color(0xFF1D4ED8))
 
-                          : Colors.white38,
+                          : (isDarkMode ? Colors.white38 : const Color(0xFF64748B)),
 
                       size: 22,
 
@@ -4520,9 +4339,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
                               color: (_smartFareModeEnabled[app.id] ?? false)
 
-                                  ? const Color(0xFF82B1FF)
+                                  ? (isDarkMode ? const Color(0xFF82B1FF) : const Color(0xFF1E40AF))
 
-                                  : Colors.white,
+                                  : (isDarkMode ? Colors.white : const Color(0xFF111827)),
 
                               fontWeight: FontWeight.bold,
 
@@ -4550,7 +4369,13 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
                                     : 'Accept by KM & Price only — no drop location name needed'),
 
-                            style: const TextStyle(color: Colors.white54, fontSize: 11),
+                            style: TextStyle(
+                              color: (_smartFareModeEnabled[app.id] ?? false)
+                                  ? (isDarkMode ? const Color(0xFF90CAF9) : const Color(0xFF1D4ED8))
+                                  : AppThemeColors.textSecondary,
+                              fontSize: 11,
+                              fontWeight: ((_smartFareModeEnabled[app.id] ?? false) && !isDarkMode) ? FontWeight.w500 : FontWeight.normal,
+                            ),
 
                           ),
 
@@ -4590,9 +4415,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
                       activeTrackColor: const Color(0xFF2979FF).withOpacity(0.3),
 
-                      inactiveThumbColor: const Color(0xFF888888),
+                      inactiveThumbColor: isDarkMode ? const Color(0xFF888888) : const Color(0xFF9CA3AF),
 
-                      inactiveTrackColor: const Color(0xFF2A2A2A),
+                      inactiveTrackColor: isDarkMode ? const Color(0xFF2A2A2A) : const Color(0xFFE2E8F0),
 
                     ),
 
@@ -4626,7 +4451,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
                       'Pickup: ${_pickupRanges[app.id]!.start.toStringAsFixed(1)} - ${_pickupRanges[app.id]!.end.toStringAsFixed(1)} KM',
 
-                      style: const TextStyle(color: Colors.white70, fontSize: 11),
+                      style: TextStyle(
+                        color: isDarkMode ? AppThemeColors.textSecondary : const Color(0xFF374151),
+                        fontSize: 11.5,
+                        fontWeight: FontWeight.w600,
+                      ),
 
                     ),
 
@@ -4642,11 +4471,13 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
                     overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
 
-                    trackHeight: 2,
+                    trackHeight: 2.5,
 
-                    activeTrackColor: app.primaryColor,
+                    activeTrackColor: effectivePrimaryColor,
 
-                    thumbColor: app.primaryColor,
+                    thumbColor: effectivePrimaryColor,
+
+                    inactiveTrackColor: isDarkMode ? Colors.white12 : const Color(0xFFE2E4E8),
 
                   ),
 
@@ -4668,9 +4499,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
                     ),
 
-                    onChanged: (vals) => setState(() => _pickupRanges[app.id] = vals),
-
-                    onChangeEnd: (_) => _saveAppFilters(app.id),
+                    onChanged: (vals) => setState(() { _pickupRanges[app.id] = vals; _hasUnsavedFilters[app.id] = true; }),
 
                   ),
 
@@ -4688,7 +4517,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
                       'Drop: ${_dropRanges[app.id]!.start.toStringAsFixed(1)} - ${_dropRanges[app.id]!.end.toStringAsFixed(1)} KM',
 
-                      style: const TextStyle(color: Colors.white70, fontSize: 11),
+                      style: TextStyle(
+                        color: isDarkMode ? AppThemeColors.textSecondary : const Color(0xFF374151),
+                        fontSize: 11.5,
+                        fontWeight: FontWeight.w600,
+                      ),
 
                     ),
 
@@ -4704,11 +4537,13 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
                     overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
 
-                    trackHeight: 2,
+                    trackHeight: 2.5,
 
-                    activeTrackColor: app.primaryColor,
+                    activeTrackColor: effectivePrimaryColor,
 
-                    thumbColor: app.primaryColor,
+                    thumbColor: effectivePrimaryColor,
+
+                    inactiveTrackColor: isDarkMode ? Colors.white12 : const Color(0xFFE2E4E8),
 
                   ),
 
@@ -4730,9 +4565,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
                     ),
 
-                    onChanged: (vals) => setState(() => _dropRanges[app.id] = vals),
-
-                    onChangeEnd: (_) => _saveAppFilters(app.id),
+                    onChanged: (vals) => setState(() { _dropRanges[app.id] = vals; _hasUnsavedFilters[app.id] = true; }),
 
                   ),
 
@@ -4750,7 +4583,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
                       'Price: ₹${_priceRanges[app.id]!.start.toStringAsFixed(0)} - ₹${_priceRanges[app.id]!.end.toStringAsFixed(0)}',
 
-                      style: const TextStyle(color: Colors.white70, fontSize: 11),
+                      style: TextStyle(
+                        color: isDarkMode ? AppThemeColors.textSecondary : const Color(0xFF374151),
+                        fontSize: 11.5,
+                        fontWeight: FontWeight.w600,
+                      ),
 
                     ),
 
@@ -4766,11 +4603,13 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
                     overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
 
-                    trackHeight: 2,
+                    trackHeight: 2.5,
 
-                    activeTrackColor: app.primaryColor,
+                    activeTrackColor: effectivePrimaryColor,
 
-                    thumbColor: app.primaryColor,
+                    thumbColor: effectivePrimaryColor,
+
+                    inactiveTrackColor: isDarkMode ? Colors.white12 : const Color(0xFFE2E4E8),
 
                   ),
 
@@ -4792,9 +4631,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
                     ),
 
-                    onChanged: (vals) => setState(() => _priceRanges[app.id] = vals),
-
-                    onChangeEnd: (_) => _saveAppFilters(app.id),
+                    onChanged: (vals) => setState(() { _priceRanges[app.id] = vals; _hasUnsavedFilters[app.id] = true; }),
 
                   ),
 
@@ -4802,21 +4639,79 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
                 
 
+                
+                const SizedBox(height: 12),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton.icon(
+                    icon: Icon(
+                      Icons.save,
+                      size: 16,
+                      color: _hasUnsavedFilters[app.id] == true
+                          ? Colors.black
+                          : (isDarkMode ? const Color(0xFFFFCC00) : const Color(0xFFD97706)),
+                    ),
+                    label: Text(
+                      _hasUnsavedFilters[app.id] == true
+                          ? (isTamil ? 'ஃபில்டர்களை சேமிக்க (மாற்றங்கள் உள்ளன)' : 'SAVE FILTERS (Unsaved Changes)')
+                          : (isTamil ? 'ஃபில்டர்களை சேமி (SAVED)' : 'SAVE FILTERS'),
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 12,
+                        color: _hasUnsavedFilters[app.id] == true
+                            ? Colors.black
+                            : (isDarkMode ? Colors.white70 : const Color(0xFF334155)),
+                      ),
+                    ),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: _hasUnsavedFilters[app.id] == true
+                          ? const Color(0xFFFFCC00)
+                          : (isDarkMode ? const Color(0xFF262626) : const Color(0xFFF1F5F9)),
+                      foregroundColor: _hasUnsavedFilters[app.id] == true
+                          ? Colors.black
+                          : (isDarkMode ? Colors.white70 : const Color(0xFF334155)),
+                      elevation: _hasUnsavedFilters[app.id] == true ? 2 : 0,
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8),
+                        side: BorderSide(
+                          color: _hasUnsavedFilters[app.id] == true
+                              ? const Color(0xFFFFCC00)
+                              : (isDarkMode ? Colors.white12 : const Color(0xFFCBD5E1)),
+                        ),
+                      ),
+                    ),
+                    onPressed: () async {
+                      await _saveAppFilters(app.id);
+                      setState(() {
+                        _hasUnsavedFilters[app.id] = false;
+                      });
+                      _showSnack('${app.name} filters saved successfully!');
+                    },
+                  ),
+                ),
+
                 const SizedBox(height: 12),
 
                 OutlinedButton.icon(
 
                   onPressed: () => _showCropBox(app.name),
 
-                  icon: const Icon(Icons.crop_free, size: 18),
+                  icon: Icon(Icons.crop_free,
+                      size: 18,
+                      color: isDarkMode ? Colors.white70 : const Color(0xFF334155)),
 
-                  label: const Text('Set Target Zone (Crop Box)'),
+                  label: Text('Set Target Zone (Crop Box)',
+                      style: TextStyle(
+                          color: isDarkMode ? Colors.white70 : const Color(0xFF334155),
+                          fontWeight: FontWeight.w600,
+                          fontSize: 12)),
 
                   style: OutlinedButton.styleFrom(
 
-                    foregroundColor: Colors.white70,
+                    foregroundColor: isDarkMode ? Colors.white70 : const Color(0xFF334155),
 
-                    side: const BorderSide(color: Colors.white24),
+                    side: BorderSide(color: isDarkMode ? Colors.white24 : const Color(0xFFCBD5E1)),
 
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
 
@@ -4864,7 +4759,13 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
                 '🤖 Auto-clicks: ${app.acceptButtonName}',
 
-                style: TextStyle(fontSize: 11, color: app.primaryColor.withOpacity(0.8)),
+                style: TextStyle(
+                  fontSize: 11,
+                  color: isDarkMode
+                      ? effectivePrimaryColor.withOpacity(0.8)
+                      : (app.id == 'rapido' ? const Color(0xFFB45309) : effectivePrimaryColor),
+                  fontWeight: FontWeight.w600,
+                ),
 
               ),
 
@@ -4910,11 +4811,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
       decoration: BoxDecoration(
 
-        color: const Color(0xFF1A1A1A),
-
+        color: AppThemeColors.cardBg,
         borderRadius: BorderRadius.circular(14),
-
-        border: Border.all(color: const Color(0xFF2A2A2A)),
+        border: Border.all(color: AppThemeColors.cardBorder),
 
       ),
 
@@ -4924,11 +4823,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
         children: [
 
-          const Text('ℹ️ How it works',
+          Text('ℹ️ How it works',
 
               style: TextStyle(
 
-                  fontSize: 14, fontWeight: FontWeight.bold, color: Colors.white)),
+                  fontSize: 14, fontWeight: FontWeight.bold, color: AppThemeColors.textPrimary)),
 
           const SizedBox(height: 10),
 
@@ -4974,11 +4873,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
                   '   • Location Profile ON = Smart Fare turns OFF automatically',
 
-            style: const TextStyle(fontSize: 12, color: Color(0xFFB3B3B3), height: 1.7),
+            style: TextStyle(fontSize: 12, color: isDarkMode ? const Color(0xFFB3B3B3) : const Color(0xFF4B5563), height: 1.7),
 
           ),
 
-          const Divider(color: Color(0xFF2A2A2A), height: 20),
+          Divider(color: isDarkMode ? const Color(0xFF2A2A2A) : const Color(0xFFE2E4E8), height: 20),
 
           const Text(
 
@@ -5020,7 +4919,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
 
-      content: Text(msg, style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold)),
+      content: Text(msg, style: TextStyle(color: AppThemeColors.textPrimary, fontSize: 14, fontWeight: FontWeight.bold)),
 
       backgroundColor: const Color(0xFF444444),
 
@@ -5124,7 +5023,7 @@ class _RideHistoryPageState extends State<RideHistoryPage> {
 
       builder: (ctx) => AlertDialog(
 
-        backgroundColor: const Color(0xFF1E1E1E),
+        backgroundColor: AppThemeColors.dialogBg,
 
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
 
@@ -5140,7 +5039,7 @@ class _RideHistoryPageState extends State<RideHistoryPage> {
 
               isTamil ? 'வரலாற்றை அழிக்கவா?' : 'Clear History?',
 
-              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+              style: TextStyle(color: AppThemeColors.textPrimary, fontWeight: FontWeight.bold),
 
             ),
 
@@ -5166,7 +5065,7 @@ class _RideHistoryPageState extends State<RideHistoryPage> {
 
             onPressed: () => Navigator.pop(ctx, false),
 
-            child: Text(isTamil ? 'ரத்து' : 'Cancel', style: const TextStyle(color: Colors.white54)),
+            child: Text(isTamil ? 'ரத்து' : 'Cancel', style: TextStyle(color: AppThemeColors.textSecondary)),
 
           ),
 

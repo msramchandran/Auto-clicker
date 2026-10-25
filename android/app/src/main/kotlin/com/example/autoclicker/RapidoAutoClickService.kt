@@ -734,20 +734,10 @@ class RapidoAutoClickService : AccessibilityService() {
 
 
 
-        // Get this app's target drop location
-
-        val targetLocationStr = prefs.getString(appConfig.prefKeyLocation, "") ?: ""
-
+        // Get active location profiles (ONLY active saved profiles from global_active_locations)
         val globalLocationsStr = prefs.getString("global_active_locations", "") ?: ""
-
-        val combinedLocationsStr = "$targetLocationStr,$globalLocationsStr"
-
-
-
-        val targetLocations = combinedLocationsStr.split(",")
-
+        val targetLocations = globalLocationsStr.split(",")
             .map { it.trim() }
-
             .filter { it.isNotEmpty() }
 
 
@@ -1196,13 +1186,23 @@ class RapidoAutoClickService : AccessibilityService() {
         val appId = appConfig.prefKeyEnabled.removePrefix("enabled_")
         val isSmartFareMode = prefs.getBoolean("${appId}_smartFareMode", false)
 
-        val matchedLocation = targetLocations.firstOrNull { loc ->
-            when {
-                dropText.isNotEmpty() -> dropText.contains(loc, ignoreCase = true)
-                else -> allText.contains(loc, ignoreCase = true)
+        val isLocationMatch: Boolean
+        val matchedLocation: String?
+        if (isSmartFareMode) {
+            isLocationMatch = true
+            matchedLocation = "Smart Fare"
+        } else {
+            if (dropText.isEmpty()) {
+                // Drop text was not found! DO NOT fallback to allText. Do NOT click accept!
+                Log.d(TAG, "[${appConfig.displayName}] Drop text not found in Location Profile mode. Skipping accept.")
+                updateHUD("⚠️ Drop Text Not Found", "#88FF9800", true)
+                return true
             }
+            matchedLocation = targetLocations.firstOrNull { loc ->
+                dropText.contains(loc, ignoreCase = true)
+            }
+            isLocationMatch = (matchedLocation != null)
         }
-        val isLocationMatch = if (isSmartFareMode) true else (matchedLocation != null)
         Log.d(TAG, "[${appConfig.displayName}] isSmartFareMode=$isSmartFareMode isLocationMatch=$isLocationMatch matched='$matchedLocation'")
 
         // Step 5: Distance & Price Validation
@@ -1250,7 +1250,7 @@ class RapidoAutoClickService : AccessibilityService() {
                 updateHUD("❌ Skip: $dropText", "#88D32F2F", true)
                 saveRideHistory(appConfig.displayName, dropText + distStr, "SKIPPED", pickupKm, dropKm, baseFare, tipAmt, pickupText, dropText)
             } else {
-                updateHUD("🟡 Ride card: no location", "#88FF9800", true)
+                updateHUD("⚠️ Drop Text Not Found", "#88FF9800", true)
             }
             return true
         }
