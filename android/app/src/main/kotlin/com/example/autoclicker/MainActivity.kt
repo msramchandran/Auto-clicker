@@ -57,6 +57,11 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        try {
+            AdbManager.init(this)
+        } catch (t: Throwable) {
+            Log.w("MainActivity", "AdbManager init notice: ${t.message}")
+        }
 
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
             .setMethodCallHandler { call, result ->
@@ -133,6 +138,7 @@ class MainActivity : FlutterActivity() {
                             RapidoAutoClickService.instance?.updateNotification(
                                 buildActiveAppsText()
                             )
+                            RapidoAutoClickService.instance?.showInitialActiveHUD()
                             result.success(null)
                         } else {
                             result.error("NOT_FOUND", "App config not found: $appId", null)
@@ -159,6 +165,38 @@ class MainActivity : FlutterActivity() {
                             .putFloat("price_max_$appId", priceMax)
                             .apply()
                         result.success(null)
+                    }
+
+                    // ── Global: Set Filters for all apps ─────────────────
+                    // args: { "pickupMin": 0.0, "pickupMax": 5.0, "dropMin": 0.0, "dropMax": 50.0, "priceMin": 0.0, "priceMax": 1500.0 }
+                    "setGlobalFilters" -> {
+                        val pickupMin = call.argument<Double>("pickupMin")?.toFloat() ?: 0.0f
+                        val pickupMax = call.argument<Double>("pickupMax")?.toFloat() ?: 5.0f
+                        val dropMin = call.argument<Double>("dropMin")?.toFloat() ?: 0.0f
+                        val dropMax = call.argument<Double>("dropMax")?.toFloat() ?: 50.0f
+                        val priceMin = call.argument<Double>("priceMin")?.toFloat() ?: 0.0f
+                        val priceMax = call.argument<Double>("priceMax")?.toFloat() ?: 1500.0f
+
+                        val editor = prefs.edit()
+                        editor.putFloat("global_pickup_min", pickupMin)
+                        editor.putFloat("global_pickup_max", pickupMax)
+                        editor.putFloat("global_drop_min", dropMin)
+                        editor.putFloat("global_drop_max", dropMax)
+                        editor.putFloat("global_price_min", priceMin)
+                        editor.putFloat("global_price_max", priceMax)
+
+                        // Update individual app keys for backward compatibility
+                        listOf("rapido", "ola", "uber", "azhai").forEach { id ->
+                            editor.putFloat("pickup_min_$id", pickupMin)
+                            editor.putFloat("pickup_max_$id", pickupMax)
+                            editor.putFloat("drop_min_$id", dropMin)
+                            editor.putFloat("drop_max_$id", dropMax)
+                            editor.putFloat("price_min_$id", priceMin)
+                            editor.putFloat("price_max_$id", priceMax)
+                        }
+                        editor.apply()
+                        android.util.Log.d("AutoClicker", "[GlobalFilters] Saved -> Pickup: ${pickupMin}..${pickupMax}km, Drop: ${dropMin}..${dropMax}km, Price: ₹${priceMin}..₹${priceMax} (Synced to Rapido, Ola, Uber)")
+                        result.success(true)
                     }
 
                     "syncAcceptedTrips" -> {
@@ -190,59 +228,66 @@ class MainActivity : FlutterActivity() {
                         result.success(null)
                     }
 
-                    "setOlaBlocker" -> {
-                        val enabled = call.argument<Boolean>("enabled") ?: true
-                        prefs.edit().putBoolean("ola_blocker_enabled", enabled).apply()
-                        result.success(null)
-                    }
-
-                    // ── Get all app states ──────────────────────────────
-                    "getAllAppStates" -> {
-                        val statesMap = mutableMapOf<String, Any>()
-                        RapidoAutoClickService.APP_CONFIGS.forEach { config ->
-                            val appId = config.prefKeyEnabled.removePrefix("enabled_")
-                            statesMap["${appId}_enabled"] = prefs.getBoolean(config.prefKeyEnabled, false)
-                            statesMap["${appId}_pickup_min"] = prefs.getFloat("pickup_min_$appId", 0.0f).toDouble()
-                            statesMap["${appId}_pickup_max"] = prefs.getFloat("pickup_max_$appId", 5.0f).toDouble()
-                            statesMap["${appId}_drop_min"] = prefs.getFloat("drop_min_$appId", 0.0f).toDouble()
-                            statesMap["${appId}_drop_max"] = prefs.getFloat("drop_max_$appId", 50.0f).toDouble()
-                            statesMap["${appId}_price_min"] = prefs.getFloat("price_min_$appId", 0.0f).toDouble()
-                            statesMap["${appId}_price_max"] = prefs.getFloat("price_max_$appId", 1500.0f).toDouble()
-                            statesMap["${appId}_smartFareMode"] = prefs.getBoolean("${appId}_smartFareMode", false)
+                    "pairAdb" -> {
+                        val pairingPort = call.argument<Int>("pairingPort") ?: 0
+                        val pairingCode = call.argument<String>("pairingCode") ?: ""
+                        val connectPort = call.argument<Int>("connectPort") ?: pairingPort
+                        AdbManager.pairAndConnect(this, pairingPort, pairingCode, connectPort) { success, msg ->
+                            result.success(mapOf("success" to success, "message" to msg))
                         }
-                        statesMap["ola_blocker_enabled"] = prefs.getBoolean("ola_blocker_enabled", true)
-                        statesMap["isAppPurchased"] = prefs.getBoolean("isAppPurchased", false)
-                        statesMap["totalAccepted"] = prefs.getInt("totalAccepted", 0)
-                        statesMap["totalSkipped"] = prefs.getInt("totalSkipped", 0)
-                        statesMap["totalEarnings"] = prefs.getFloat("totalEarnings", 0.0f).toDouble()
-                        statesMap["isHUDEnabled"] = prefs.getBoolean("isHUDEnabled", true)
-                        statesMap["locationProfiles"] = prefs.getString("locationProfiles", "[]") ?: "[]"
-                        result.success(statesMap)
                     }
 
-                    // ── Get ride history ──────────────────────────────
-                    "getRideHistory" -> {
-                        val historyStr = prefs.getString("ride_history", "[]") ?: "[]"
-                        result.success(historyStr)
+
+                    "connectAdbOnly" -> {
+                        val connectPort = call.argument<Int>("connectPort") ?: 0
+                        AdbManager.connectOnly(this, connectPort) { success, msg ->
+                            result.success(mapOf("success" to success, "message" to msg))
+                        }
                     }
 
-                    // ── Clear ride history ────────────────────────────
-                    "clearRideHistory" -> {
-                        prefs.edit()
-                            .remove("ride_history")
-                            .apply()
-                        RapidoAutoClickService.instance?.clearHistory()
-                        result.success(null)
+                    "getAdbStatus" -> {
+                        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                        val connected = prefs.getBoolean("adb_is_connected", false)
+                        val port = prefs.getInt("adb_connect_port", -1)
+                        result.success(mapOf("isConnected" to connected, "connectPort" to port))
                     }
 
-                                        // ── Status Bar Notification ─────────────────────────
-                    "requestNotificationPermission" -> {
-                        requestNotificationPermissionIfNeeded()
+                    "testAdbTap" -> {
+                        val x = (call.argument<Double>("x") ?: 500.0).toFloat()
+                        val y = (call.argument<Double>("y") ?: 1000.0).toFloat()
+                        AdbManager.tapAsync(x, y) { ok -> result.success(ok) }
+                        return@setMethodCallHandler
+
+                    }
+
+                    "disconnectAdb" -> {
+                        AdbManager.disconnect(this)
                         result.success(true)
                     }
 
+                    "getOlaDevBypassStatus" -> {
+                        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                        val isBypassEnabled = prefs.getBoolean("ola_dev_bypass_enabled", true)
+                        val isDevOptionsActive = AdbManager.isDeveloperOptionsEnabled(this)
+                        val hasPermission = AdbManager.isWriteSecureSettingsGranted(this)
+                        result.success(
+                            mapOf(
+                                "isBypassEnabled" to isBypassEnabled,
+                                "isDevOptionsActive" to isDevOptionsActive,
+                                "hasPermission" to hasPermission
+                            )
+                        )
+                    }
+
+                    "setOlaDevBypass" -> {
+                        val enabled = call.argument<Boolean>("enabled") ?: true
+                        AdbManager.setDeveloperOptionsBypass(this, enabled) { success, msg ->
+                            result.success(mapOf("success" to success, "message" to msg))
+                        }
+                    }
+
                     "showNotification" -> {
-                        val title = call.argument<String>("title") ?: "Auto Clicker"
+                        val title = call.argument<String>("title") ?: "Way 2 Right path"
                         val message = call.argument<String>("message") ?: ""
                         val notifId = call.argument<Int>("id") ?: 1002
                         showAppNotification(title, message, notifId)
@@ -251,7 +296,7 @@ class MainActivity : FlutterActivity() {
 
                     "scheduleBlockEndNotification" -> {
                         val triggerAt = (call.argument<Number>("triggerAtMillis")?.toLong()) ?: 0L
-                        val title = call.argument<String>("title") ?: "Auto Clicker - 12hr Block Ended"
+                        val title = call.argument<String>("title") ?: "Way 2 Right path - 12hr Block Ended"
                         val message = call.argument<String>("message") ?: "Your block is removed and you can use the app now!"
                         scheduleBlockEndNotification(triggerAt, title, message)
                         result.success(true)
@@ -259,6 +304,63 @@ class MainActivity : FlutterActivity() {
 
                     "cancelBlockEndNotification" -> {
                         cancelBlockEndNotification()
+                        result.success(true)
+                    }
+
+                    "getAllAppStates" -> {
+                        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                        val statesMap = mutableMapOf<String, Any>()
+                        RapidoAutoClickService.APP_CONFIGS.forEach { config ->
+                            val appId = config.prefKeyEnabled.removePrefix("enabled_")
+                            statesMap["${appId}_enabled"] = prefs.getBoolean(config.prefKeyEnabled, false)
+                            statesMap["${appId}_location"] = prefs.getString(config.prefKeyLocation, "") ?: ""
+                            statesMap["${appId}_pickup_min"] = prefs.getFloat("pickup_min_$appId", 0.0f).toDouble()
+                            statesMap["${appId}_pickup_max"] = prefs.getFloat("pickup_max_$appId", 5.0f).toDouble()
+                            statesMap["${appId}_drop_min"] = prefs.getFloat("drop_min_$appId", 0.0f).toDouble()
+                            statesMap["${appId}_drop_max"] = prefs.getFloat("drop_max_$appId", 50.0f).toDouble()
+                            statesMap["${appId}_price_min"] = prefs.getFloat("price_min_$appId", 0.0f).toDouble()
+                            statesMap["${appId}_price_max"] = prefs.getFloat("price_max_$appId", 1500.0f).toDouble()
+                            statesMap["${appId}_smartFareMode"] = prefs.getBoolean("${appId}_smartFareMode", false)
+                        }
+                        statesMap["totalAccepted"] = prefs.getInt("totalAccepted", 0)
+                        statesMap["totalSkipped"] = prefs.getInt("totalSkipped", 0)
+                        statesMap["totalEarnings"] = prefs.getFloat("totalEarnings", 0.0f).toDouble()
+                        statesMap["isHUDEnabled"] = prefs.getBoolean("isHUDEnabled", true)
+                        statesMap["locationProfiles"] = prefs.getString("locationProfiles", "[]") ?: "[]"
+                        statesMap["ride_history"] = prefs.getString("ride_history", "[]") ?: "[]"
+
+                        // Global Filters
+                        val defaultPickupMin = prefs.getFloat("pickup_min_rapido", 0.0f)
+                        val defaultPickupMax = prefs.getFloat("pickup_max_rapido", 5.0f)
+                        val defaultDropMin = prefs.getFloat("drop_min_rapido", 0.0f)
+                        val defaultDropMax = prefs.getFloat("drop_max_rapido", 50.0f)
+                        val defaultPriceMin = prefs.getFloat("price_min_rapido", 0.0f)
+                        val defaultPriceMax = prefs.getFloat("price_max_rapido", 1500.0f)
+
+                        statesMap["global_pickup_min"] = prefs.getFloat("global_pickup_min", defaultPickupMin).toDouble()
+                        statesMap["global_pickup_max"] = prefs.getFloat("global_pickup_max", defaultPickupMax).toDouble()
+                        statesMap["global_drop_min"] = prefs.getFloat("global_drop_min", defaultDropMin).toDouble()
+                        statesMap["global_drop_max"] = prefs.getFloat("global_drop_max", defaultDropMax).toDouble()
+                        statesMap["global_price_min"] = prefs.getFloat("global_price_min", defaultPriceMin).toDouble()
+                        statesMap["global_price_max"] = prefs.getFloat("global_price_max", defaultPriceMax).toDouble()
+                        result.success(statesMap)
+                    }
+
+                    "getRideHistory" -> {
+                        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                        val historyStr = prefs.getString("ride_history", "[]") ?: "[]"
+                        result.success(historyStr)
+                    }
+
+                    "clearRideHistory" -> {
+                        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                        prefs.edit()
+                            .putString("ride_history", "[]")
+                            .putInt("totalAccepted", 0)
+                            .putInt("totalSkipped", 0)
+                            .putFloat("totalEarnings", 0.0f)
+                            .apply()
+                        RapidoAutoClickService.instance?.clearHistory()
                         result.success(true)
                     }
 
@@ -282,6 +384,12 @@ class MainActivity : FlutterActivity() {
             runOnUiThread {
                 MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
                     .invokeMethod("onRideDetected", mapOf("appName" to appName, "info" to info))
+            }
+        }
+        RapidoAutoClickService.onRideEvent = { rideMap ->
+            runOnUiThread {
+                MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
+                    .invokeMethod("onRideEvent", rideMap)
             }
         }
 

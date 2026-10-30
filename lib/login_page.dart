@@ -41,7 +41,7 @@ class _LoginPageState extends State<LoginPage> {
     final driverId = _idController.text.trim();
     if (driverId.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please enter your Driver Auto Clicker ID')),
+        const SnackBar(content: Text('Please enter your Driver ID')),
       );
       return;
     }
@@ -155,7 +155,7 @@ class _LoginPageState extends State<LoginPage> {
               const Icon(Icons.speed, size: 80, color: Color(0xFFFFCC00)),
               const SizedBox(height: 24),
               const Text(
-                'Azhai Auto Clicker',
+                'Way 2 Right path',
                 textAlign: TextAlign.center,
                 style: TextStyle(
                   color: Colors.white,
@@ -177,7 +177,7 @@ class _LoginPageState extends State<LoginPage> {
                 controller: _idController,
                 style: const TextStyle(color: Colors.white),
                 decoration: InputDecoration(
-                  labelText: 'Driver Auto Clicker ID',
+                  labelText: 'Driver ID',
                   labelStyle: const TextStyle(color: Colors.white54),
                   filled: true,
                   fillColor: const Color(0xFF1A1A1A),

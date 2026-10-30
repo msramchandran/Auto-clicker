@@ -30,6 +30,10 @@ android {
             // TODO: Add your own signing config for the release build.
             // Signing with the debug keys for now, so `flutter run --release` works.
             signingConfig = signingConfigs.getByName("debug")
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
         }
     }
 }
@@ -43,3 +47,13 @@ kotlin {
 flutter {
     source = "../.."
 }
+
+dependencies {
+    implementation("com.github.MuntashirAkon:libadb-android:3.1.1")
+    implementation("org.conscrypt:conscrypt-android:2.5.3")
+    implementation("org.bouncycastle:bcpkix-jdk15to18:1.81")
+    implementation("org.bouncycastle:bcprov-jdk15to18:1.81")
+    implementation("com.google.mlkit:text-recognition:16.0.1")
+}
+
+

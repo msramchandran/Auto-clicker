@@ -57,6 +57,14 @@ import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 
 import androidx.core.app.NotificationCompat
+import android.graphics.Bitmap
+import android.graphics.ColorSpace
+import android.view.Display
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.Executors
+import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.text.TextRecognition
+import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 
 
 
@@ -164,6 +172,22 @@ class RapidoAutoClickService : AccessibilityService() {
 
                 prefKeyLocation = "location_ola"
 
+            ),
+
+            AppConfig(
+
+                packageName = "com.zomato.delivery",
+
+                displayName = "Zomato",
+
+                // "Swipe to accept" slider button
+
+                acceptButtonKeywords = listOf("swipe to accept", "swipe", "accept"),
+
+                prefKeyEnabled = "enabled_zomato",
+
+                prefKeyLocation = "location_zomato"
+
             )
 
         )
@@ -177,6 +201,7 @@ class RapidoAutoClickService : AccessibilityService() {
         var onRideSkipped: ((String, String) -> Unit)? = null
 
         var onRideDetected: ((String, String) -> Unit)? = null
+        var onRideEvent: ((Map<String, Any>) -> Unit)? = null
 
     }
 
@@ -191,8 +216,18 @@ class RapidoAutoClickService : AccessibilityService() {
 
 
     // Per-app cooldown tracker
-
     private val cooldowns = mutableMapOf<String, Long>()
+    private val lastDetectTimes = mutableMapOf<String, Long>()
+
+    // Reusable Handler for humanized delayed clicks (avoids blocking onAccessibilityEvent thread)
+    private val rapidoClickHandler = Handler(android.os.Looper.getMainLooper())
+
+    // Uber On-Device ML Kit OCR
+    private val textRecognizer by lazy {
+        TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+    }
+    private val ocrExecutor = Executors.newSingleThreadExecutor()
+    private val isUberOcrRunning = AtomicBoolean(false)
 
 
 
@@ -212,70 +247,80 @@ class RapidoAutoClickService : AccessibilityService() {
 
     private var hudOffButton: TextView? = null
 
+    private var isHudAttached = false
+
     private var cropBoxOverlayLayout: android.widget.FrameLayout? = null
 
 
 
     override fun onServiceConnected() {
-
         super.onServiceConnected()
+        try {
+            instance = this
+            Log.d(TAG, "✅ AutoClickService Connected — monitoring ${APP_CONFIGS.size} apps")
 
-        instance = this
+            // 1. Safely update existing serviceInfo WITHOUT wiping XML capabilities
+            try {
+                val existingInfo = this.serviceInfo
+                if (existingInfo != null) {
+                    existingInfo.packageNames = null // Monitor all target apps
+                    this.serviceInfo = existingInfo
+                }
+            } catch (t: Throwable) {
+                Log.w(TAG, "Failed updating serviceInfo: ${t.message}")
+            }
 
-        Log.d(TAG, "✅ AutoClickService Connected — monitoring ${APP_CONFIGS.size} apps")
+            // 2. Safe notification channel & notification
+            try {
+                createNotificationChannel()
+                updateNotification("Monitoring Rapido • Uber • OLA • Azhai • Zomato")
+            } catch (t: Throwable) {
+                Log.w(TAG, "Initial notification notice: ${t.message}")
+            }
 
+            // 3. Safe AdbManager init
+            try {
+                AdbManager.init(this)
+            } catch (t: Throwable) {
+                Log.w(TAG, "AdbManager init notice: ${t.message}")
+            }
 
+            // 4. Safe HUD init with post-delay to ensure window token is valid
+            Handler(Looper.getMainLooper()).postDelayed({
+                try {
+                    initHUD()
+                } catch (t: Throwable) {
+                    Log.e(TAG, "HUD init error: ${t.message}")
+                }
+            }, 500L)
 
-        val info = AccessibilityServiceInfo().apply {
-
-            eventTypes = AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED or
-
-                    AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
-
-            packageNames = APP_CONFIGS.map { it.packageName }.toTypedArray()
-
-            feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
-
-            notificationTimeout = 100
-
-            flags = AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS or
-
-                    AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS
-
+        } catch (t: Throwable) {
+            Log.e(TAG, "FATAL error prevented in onServiceConnected: ${t.message}", t)
         }
-
-        serviceInfo = info
-
-
-
-        createNotificationChannel()
-
-        updateNotification("Monitoring Rapido • Uber • OLA • Azhai")
-
-        
-
-        initHUD()
-
     }
 
 
 
     override fun onDestroy() {
-
         super.onDestroy()
-
         instance = null
 
         try {
+            ocrExecutor.shutdown()
+        } catch (e: Exception) {}
 
-            hudContainer?.let { windowManager?.removeView(it) }
+        try {
+            textRecognizer.close()
+        } catch (e: Exception) {}
 
+        try {
+            if (isHudAttached) {
+                hudContainer?.let { windowManager?.removeView(it) }
+                isHudAttached = false
+            }
         } catch (e: Exception) {
-
             Log.e(TAG, "Remove HUD error: ${e.message}")
-
         }
-
     }
 
 
@@ -330,7 +375,7 @@ class RapidoAutoClickService : AccessibilityService() {
 
         hudStatusText = TextView(this).apply {
 
-            text = "🤖 AutoClicker"
+            text = "🧭 Way 2 Right path"
 
             setTextColor(Color.WHITE)
 
@@ -451,6 +496,7 @@ class RapidoAutoClickService : AccessibilityService() {
         hudContainer?.post {
 
             try {
+                if (!isHudAttached) return@post
 
                 val screenW = resources.displayMetrics.widthPixels
 
@@ -464,7 +510,7 @@ class RapidoAutoClickService : AccessibilityService() {
 
                 }
 
-            } catch (e: Exception) {}
+            } catch (t: Throwable) {}
 
         }
 
@@ -566,7 +612,7 @@ class RapidoAutoClickService : AccessibilityService() {
 
                             this@RapidoAutoClickService,
 
-                            "🤖 AutoClicker இயங்குகிறது. அணைக்க '⏻ OFF accessibility' தட்டவும்.",
+                            "🧭 Way 2 Right path இயங்குகிறது. அணைக்க '⏻ OFF accessibility' தட்டவும்.",
 
                             Toast.LENGTH_SHORT
 
@@ -592,9 +638,13 @@ class RapidoAutoClickService : AccessibilityService() {
 
             hudContainer?.visibility = View.GONE
 
-        } catch (e: Exception) {
+            isHudAttached = true
 
-            Log.e(TAG, "HUD init error: ${e.message}")
+        } catch (t: Throwable) {
+
+            isHudAttached = false
+
+            Log.e(TAG, "HUD init error: ${t.message}")
 
         }
 
@@ -602,88 +652,94 @@ class RapidoAutoClickService : AccessibilityService() {
 
 
 
-    private fun updateHUD(statusText: String, bgColorHex: String = "#88000000", isVisible: Boolean = true) {
+    private var hudLockedUntil = 0L
+
+    private fun updateHUD(
+        statusText: String,
+        bgColorHex: String = "#88000000",
+        isVisible: Boolean = true,
+        lockDurationMs: Long = 0L
+    ) {
+        if (!isHudAttached) return
+        val now = System.currentTimeMillis()
+        if (lockDurationMs > 0L) {
+            hudLockedUntil = now + lockDurationMs
+        } else if (now < hudLockedUntil) {
+            // A priority alert (Skip / Accepted) is currently on screen — do not overwrite it!
+            return
+        }
 
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-
         val isHUDEnabled = prefs.getBoolean("isHUDEnabled", true)
-
         val finalVisibility = if (isHUDEnabled) isVisible else false
 
-
-
         Handler(Looper.getMainLooper()).post {
-
             hudStatusText?.apply {
-
                 text = statusText
-
                 try {
-
                     val stBg = GradientDrawable().apply {
-
                         shape = GradientDrawable.RECTANGLE
-
                         cornerRadius = 24f
-
                         setColor(Color.parseColor(bgColorHex))
-
                     }
-
                     background = stBg
-
                 } catch (e: Exception) {}
-
             }
-
             hudContainer?.visibility = if (finalVisibility) View.VISIBLE else View.GONE
 
-
-
             // If HUD text expanded, clamp so it doesn't push past right screen edge
-
             hudContainer?.post {
-
                 try {
-
+                    if (!isHudAttached) return@post
                     val lp = hudContainer?.layoutParams as? WindowManager.LayoutParams
-
                     if (lp != null && hudContainer?.visibility == View.VISIBLE) {
-
                         val screenW = resources.displayMetrics.widthPixels
-
                         val hudW = hudContainer?.width ?: 0
-
                         val maxX = (screenW - hudW - 12).coerceAtLeast(12)
-
                         if (lp.x > maxX) {
-
                             lp.x = maxX
-
                             windowManager?.updateViewLayout(hudContainer, lp)
-
                         }
-
                     }
-
-                } catch (e: Exception) {}
-
+                } catch (t: Throwable) {}
             }
-
         }
-
     }
 
-
-
     fun setHUDVisibility(enabled: Boolean) {
+        if (!isHudAttached) return
+        if (enabled) {
+            showInitialActiveHUD()
+        } else {
+            Handler(Looper.getMainLooper()).post {
+                hudContainer?.visibility = View.GONE
+            }
+        }
+    }
 
-        Handler(Looper.getMainLooper()).post {
-
-            hudContainer?.visibility = if (enabled) View.VISIBLE else View.GONE
-
+    fun showInitialActiveHUD() {
+        if (!isHudAttached) return
+        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val isHUDEnabled = prefs.getBoolean("isHUDEnabled", true)
+        if (!isHUDEnabled) {
+            Handler(Looper.getMainLooper()).post {
+                hudContainer?.visibility = View.GONE
+            }
+            return
         }
 
+        val activeConfigs = APP_CONFIGS.filter { prefs.getBoolean(it.prefKeyEnabled, false) }
+        if (activeConfigs.isNotEmpty()) {
+            val names = activeConfigs.joinToString(", ") { it.displayName }
+            val isSmartFare = activeConfigs.any { prefs.getBoolean("${it.prefKeyEnabled.removePrefix("enabled_")}_smartFareMode", false) }
+            val status = if (isSmartFare) "⚡ $names Smart Fare" else "🟢 $names Monitoring"
+            val color = if (isSmartFare) "#882979FF" else "#8800C853"
+            updateHUD(status, color, isVisible = true)
+        } else {
+            Handler(Looper.getMainLooper()).post {
+                hudContainer?.visibility = View.GONE
+            }
+        }
     }
 
 
@@ -696,9 +752,29 @@ class RapidoAutoClickService : AccessibilityService() {
 
 
 
-    override fun onAccessibilityEvent(event: AccessibilityEvent) {
+    private var lastOlaBypassCheckTime = 0L
 
-        val pkg = event.packageName?.toString() ?: return
+    private fun checkAndApplyOlaDevBypass() {
+        val now = System.currentTimeMillis()
+        if (now - lastOlaBypassCheckTime < 2500L) return
+        lastOlaBypassCheckTime = now
+
+        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val bypassActive = prefs.getBoolean("ola_dev_bypass_enabled", true)
+        if (bypassActive && AdbManager.isDeveloperOptionsEnabled(this)) {
+            Log.d(TAG, "Ola active with Developer Options enabled -> Auto-hiding for bypass")
+            AdbManager.setDeveloperOptionsBypass(this, hideDevOptions = true)
+        }
+    }
+
+    override fun onAccessibilityEvent(event: AccessibilityEvent) {
+        try {
+            val pkg = event.packageName?.toString() ?: return
+
+        // Auto-silence Developer Options check if Ola is open
+        if (pkg == "com.olacabs.oladriver") {
+            checkAndApplyOlaDevBypass()
+        }
 
 
 
@@ -708,10 +784,9 @@ class RapidoAutoClickService : AccessibilityService() {
 
         if (appConfig == null) {
 
-            updateHUD("", isVisible = false) // Hide if we switch to non-target app
+            // Keep HUD steady on screen — do NOT hide on non-target system events
 
-            updateBlocker(null, false)
-
+            
             return
 
         }
@@ -759,25 +834,8 @@ class RapidoAutoClickService : AccessibilityService() {
 
 
 
-        // Read Crop Box if exists
-
-        val savedLeft = prefs.getFloat("${appConfig.packageName}_crop_left", -1f)
-
-        val cropRect = if (savedLeft != -1f) {
-
-            android.graphics.Rect(
-
-                savedLeft.toInt(),
-
-                prefs.getFloat("${appConfig.packageName}_crop_top", -1f).toInt(),
-
-                prefs.getFloat("${appConfig.packageName}_crop_right", -1f).toInt(),
-
-                prefs.getFloat("${appConfig.packageName}_crop_bottom", -1f).toInt()
-
-            )
-
-        } else null
+        // Autonomous Dynamic Crop: manual crop boxes are deprecated in favor of automatic bounds detection
+        val cropRect: android.graphics.Rect? = null
 
 
 
@@ -861,37 +919,10 @@ class RapidoAutoClickService : AccessibilityService() {
             } else {
                 updateHUD("🟢 Location Profile Active", "#8800C853", true)
             }
-
-
-
-            val isOlaBlockerEnabled = prefs.getBoolean("ola_blocker_enabled", true)
-
-            if (pkg == "com.olacabs.oladriver" && isOlaBlockerEnabled) {
-
-                val left = prefs.getInt("ola_accept_left", -1)
-
-                val top = prefs.getInt("ola_accept_top", -1)
-
-                if (left != -1) {
-
-                    val bounds = android.graphics.Rect(left, top, prefs.getInt("ola_accept_right", -1), prefs.getInt("ola_accept_bottom", -1))
-
-                    updateBlocker(bounds, true)
-
-                } else {
-
-                    updateBlocker(null, false)
-
-                }
-
-            } else {
-
-                updateBlocker(null, false)
-
-            }
-
         }
-
+        } catch (t: Throwable) {
+            Log.e(TAG, "Safe catch onAccessibilityEvent: ${t.message}", t)
+        }
     }
 
 
@@ -977,6 +1008,18 @@ class RapidoAutoClickService : AccessibilityService() {
             if (!t.isNullOrEmpty() && isNodeInCropRect(node, cropRect)) {
 
                 result.add(t)
+
+            }
+
+        } else {
+
+            // Also collect parent contentDescription if it contains fare or distance info (crucial for Uber)
+
+            val desc = node.contentDescription?.toString()?.trim()
+
+            if (!desc.isNullOrEmpty() && (desc.contains("₹") || desc.contains("rs", ignoreCase = true) || desc.matches(Regex(".*\\d+\\s*(km|m)\\b.*", RegexOption.IGNORE_CASE))) && isNodeInCropRect(node, cropRect)) {
+
+                result.add(desc)
 
             }
 
@@ -1122,12 +1165,9 @@ class RapidoAutoClickService : AccessibilityService() {
 
 
 
-        // If there's no Accept button on screen → no ride card → return false
-
-        if (acceptButton == null) {
-
+        // If there's no Accept button on screen or it is not visible/dismissing → return false
+        if (acceptButton == null || !acceptButton.isVisibleToUser) {
             return false
-
         }
 
 
@@ -1142,14 +1182,12 @@ class RapidoAutoClickService : AccessibilityService() {
 
         acceptButton.getBoundsInScreen(acceptBounds)
 
-        val dynamicCropRect = if (acceptBounds.top > 0) {
-
+        val dynamicCropRect = if (appConfig.packageName == "com.ubercab.driver" || appConfig.packageName == "com.zomato.delivery") {
+            null // Uber uses OCR dynamic card crop; Zomato swipes accept button directly
+        } else if (acceptBounds.top > 0) {
             android.graphics.Rect(0, 0, 9999, acceptBounds.top)
-
         } else {
-
-            cropRect // fallback to saved crop box if bounds invalid
-
+            null
         }
 
         Log.d(TAG, "[${appConfig.displayName}] Accept button top: ${acceptBounds.top} → reading text above Y=${acceptBounds.top}")
@@ -1182,42 +1220,100 @@ class RapidoAutoClickService : AccessibilityService() {
 
 
 
+        // Broadcast DETECTED event to UI for live incoming ride display
+        val detectKey = "${appConfig.displayName}|$dropText|$baseFare"
+        val lastDetect = lastDetectTimes[detectKey] ?: 0L
+        if (now - lastDetect > 3000L) {
+            lastDetectTimes[detectKey] = now
+            val detectedMap = mapOf<String, Any>(
+                "timestamp" to now,
+                "appName" to appConfig.displayName,
+                "location" to (if (dropText.isNotEmpty()) dropText else "Incoming Ride"),
+                "status" to "DETECTED",
+                "pickupKm" to pickupKm.toDouble(),
+                "dropKm" to dropKm.toDouble(),
+                "fare" to baseFare.toDouble(),
+                "tip" to tipAmt.toDouble(),
+                "pickupLocation" to pickupText,
+                "dropLocation" to dropText
+            )
+            onRideEvent?.invoke(detectedMap)
+            onRideDetected?.invoke(appConfig.displayName, "Incoming: $dropText")
+        }
+
         // Step 4: Match check (Location vs Smart Fare)
         val appId = appConfig.prefKeyEnabled.removePrefix("enabled_")
         val isSmartFareMode = prefs.getBoolean("${appId}_smartFareMode", false)
 
+        // ── ALWAYS ROUTE UBER TO OCR FALLBACK ──
+        // In Uber, accessibility nodes NEVER expose pickupKm, dropKm, or fare (they return -1.0).
+        // Routing directly to OCR ensures real pickup and drop distances are accurately validated
+        // against user thresholds, preventing unwanted far-away pickups from being accepted.
+        if (appConfig.packageName == "com.ubercab.driver") {
+            Log.d(TAG, "[UBER] Accept button detected. Always routing to OCR fallback for real distance & fare validation...")
+            runUberOcrFallback(acceptBounds, targetLocations, prefs, now)
+            return true
+        }
+
+        var effectiveDropText = dropText
+
         val isLocationMatch: Boolean
         val matchedLocation: String?
-        if (isSmartFareMode) {
+        if (appConfig.packageName == "com.zomato.delivery") {
+            // Zomato food delivery: No location check required
+            isLocationMatch = true
+            matchedLocation = "Zomato Order"
+        } else if (isSmartFareMode) {
+            // STRICT VALIDATION FOR SMART FARE MODE:
+            // 1. Must have a real fare > 0 (prevents false click when card is dismissing / text is gone)
+            if (baseFare <= 0f) {
+                Log.d(TAG, "[${appConfig.displayName}] Smart Fare active but baseFare <= 0 (not a valid ride card). Ignoring.")
+                return false
+            }
+            // 2. Must have at least dropKm, pickupKm, or drop location text
+            if (dropKm <= 0f && pickupKm <= 0f && effectiveDropText.isEmpty()) {
+                Log.d(TAG, "[${appConfig.displayName}] Smart Fare active but no distance or drop info found. Likely closing card. Ignoring.")
+                return false
+            }
             isLocationMatch = true
             matchedLocation = "Smart Fare"
         } else {
-            if (dropText.isEmpty()) {
+            if (effectiveDropText.isEmpty()) {
                 // Drop text was not found! DO NOT fallback to allText. Do NOT click accept!
                 Log.d(TAG, "[${appConfig.displayName}] Drop text not found in Location Profile mode. Skipping accept.")
-                updateHUD("⚠️ Drop Text Not Found", "#88FF9800", true)
+                updateHUD("⚠️ Drop Text Not Found", "#88FF9800", true, lockDurationMs = 3000L)
                 return true
             }
             matchedLocation = targetLocations.firstOrNull { loc ->
-                dropText.contains(loc, ignoreCase = true)
+                effectiveDropText.contains(loc, ignoreCase = true)
             }
             isLocationMatch = (matchedLocation != null)
         }
         Log.d(TAG, "[${appConfig.displayName}] isSmartFareMode=$isSmartFareMode isLocationMatch=$isLocationMatch matched='$matchedLocation'")
 
-        // Step 5: Distance & Price Validation
-        val pickupMin = prefs.getFloat("pickup_min_$appId", 0.0f)
-        val pickupMax = prefs.getFloat("pickup_max_$appId", 5.0f)
-        val dropMin = prefs.getFloat("drop_min_$appId", 0.0f)
-        val dropMax = prefs.getFloat("drop_max_$appId", 50.0f)
-        val priceMin = prefs.getFloat("price_min_$appId", 0.0f)
-        val priceMax = prefs.getFloat("price_max_$appId", 1500.0f)
+        // Step 5: Distance & Price Validation (reads Global Filters, falls back to per-app settings)
+        val pickupMin = prefs.getFloat("global_pickup_min", prefs.getFloat("pickup_min_$appId", 0.0f))
+        val pickupMax = prefs.getFloat("global_pickup_max", prefs.getFloat("pickup_max_$appId", 5.0f))
+        val dropMin = prefs.getFloat("global_drop_min", prefs.getFloat("drop_min_$appId", 0.0f))
+        val dropMax = prefs.getFloat("global_drop_max", prefs.getFloat("drop_max_$appId", 50.0f))
+        val priceMin = prefs.getFloat("global_price_min", prefs.getFloat("price_min_$appId", 0.0f))
+        val priceMax = prefs.getFloat("global_price_max", prefs.getFloat("price_max_$appId", 1500.0f))
 
         val isPickupInRange = pickupKm == -1f || (pickupKm in pickupMin..pickupMax)
         val isDropInRange = dropKm == -1f || (dropKm in dropMin..dropMax)
-        val isPriceInRange = baseFare == -1f || (baseFare in priceMin..priceMax)
+        val isPriceInRange = if (isSmartFareMode) {
+            baseFare > 0f && (baseFare in priceMin..priceMax)
+        } else {
+            baseFare == -1f || (baseFare in priceMin..priceMax)
+        }
 
-        val isMatch = isLocationMatch && isPickupInRange && isDropInRange && isPriceInRange
+        val isMatch = if (appConfig.packageName == "com.zomato.delivery") {
+            true // Zomato accepts immediately when "Swipe to accept" is present
+        } else {
+            isLocationMatch && isPickupInRange && isDropInRange && isPriceInRange
+        }
+
+        Log.d(TAG, "[${appConfig.displayName}] Global Filters -> Ride(P: ${pickupKm}km, D: ${dropKm}km, Fare: ₹$baseFare) vs Limits(P: $pickupMin..$pickupMax, D: $dropMin..$dropMax, Price: ₹$priceMin..₹$priceMax) => pickupInRange=$isPickupInRange, dropInRange=$isDropInRange, priceInRange=$isPriceInRange, isMatch=$isMatch")
 
         val pStr = if (pickupKm >= 0) pickupKm else "?"
         val dStr = if (dropKm >= 0) dropKm else "?"
@@ -1239,36 +1335,36 @@ class RapidoAutoClickService : AccessibilityService() {
         }
 
         if (!isMatch) {
-            if (appConfig.packageName == "com.olacabs.oladriver") {
-                updateBlocker(bounds, true)
-            }
+
             if (isSmartFareMode) {
-                updateHUD("❌ Fare Out of Range", "#88D32F2F", true)
-                val skipLoc = if (dropText.isNotEmpty()) dropText else "Smart Fare"
-                saveRideHistory(appConfig.displayName, skipLoc + distStr, "SKIPPED", pickupKm, dropKm, baseFare, tipAmt, pickupText, dropText)
-            } else if (dropText.isNotEmpty()) {
-                updateHUD("❌ Skip: $dropText", "#88D32F2F", true)
-                saveRideHistory(appConfig.displayName, dropText + distStr, "SKIPPED", pickupKm, dropKm, baseFare, tipAmt, pickupText, dropText)
+                updateHUD("❌ Fare Out of Range", "#88D32F2F", true, lockDurationMs = 3500L)
+                val skipLoc = if (effectiveDropText.isNotEmpty()) effectiveDropText else "Smart Fare"
+                saveRideHistory(appConfig.displayName, skipLoc + distStr, "SKIPPED", pickupKm, dropKm, baseFare, tipAmt, pickupText, effectiveDropText)
+            } else if (effectiveDropText.isNotEmpty()) {
+                updateHUD("❌ Skip: $effectiveDropText", "#88D32F2F", true, lockDurationMs = 3500L)
+                saveRideHistory(appConfig.displayName, effectiveDropText + distStr, "SKIPPED", pickupKm, dropKm, baseFare, tipAmt, pickupText, effectiveDropText)
             } else {
-                updateHUD("⚠️ Drop Text Not Found", "#88FF9800", true)
+                updateHUD("⚠️ Drop Text Not Found", "#88FF9800", true, lockDurationMs = 3000L)
             }
             return true
         }
 
-        if (isSmartFareMode) {
-            Log.d(TAG, "[${appConfig.displayName}] Smart Fare Match Found! Drop: '$dropText'")
-            updateHUD("🎯 Fare Match!", "#882979FF", true)
+        if (appConfig.packageName == "com.zomato.delivery") {
+            Log.d(TAG, "[ZOMATO] Zomato Order Found! Swipe to accept triggered.")
+            updateHUD("🎯 Zomato Order!", "#88E23744", true, lockDurationMs = 2500L)
+        } else if (isSmartFareMode) {
+            Log.d(TAG, "[${appConfig.displayName}] Smart Fare Match Found! Drop: '$effectiveDropText'")
+            updateHUD("🎯 Fare Match!", "#882979FF", true, lockDurationMs = 2500L)
         } else {
-            Log.d(TAG, "[${appConfig.displayName}] Target Match Found! Drop: '$dropText'")
-            updateHUD("🎯 Match: $matchedLocation", "#88FF9800", true)
+            Log.d(TAG, "[${appConfig.displayName}] Target Match Found! Drop: '$effectiveDropText'")
+            updateHUD("🎯 Match: $matchedLocation", "#88FF9800", true, lockDurationMs = 2500L)
         }
 
 
 
         if (appConfig.packageName == "com.olacabs.oladriver") {
 
-            updateBlocker(null, false)
-
+            
             val btnText = acceptButton.text?.toString()?.lowercase() ?: acceptButton.contentDescription?.toString()?.lowercase() ?: ""
 
             if (btnText.contains("accept in")) {
@@ -1289,7 +1385,7 @@ class RapidoAutoClickService : AccessibilityService() {
 
         Log.d(TAG, "[${appConfig.displayName}] ✅ MATCH! Clicking...")
 
-        updateHUD("✅ ACCEPTED!", "#FF00C853", true)
+        updateHUD("✅ ACCEPTED!", "#FF00C853", true, lockDurationMs = 4000L)
 
 
 
@@ -1307,14 +1403,107 @@ class RapidoAutoClickService : AccessibilityService() {
 
             if (appConfig.packageName == "com.olacabs.oladriver") {
 
-                Log.d(TAG, "[OLA] User will physically tap. No auto-click generated.")
+                Log.d(TAG, "[OLA] Auto-accepting OLA ride...")
 
-                true
-
-            } else {
+                if (AdbManager.isConnected) {
+                    Log.d(TAG, "[OLA] Executing ADB hardware tap & swipe...")
+                    AdbManager.tap(bounds.exactCenterX(), bounds.exactCenterY())
+                    AdbManager.swipe(bounds.left.toFloat(), bounds.exactCenterY(), bounds.right.toFloat(), bounds.exactCenterY())
+                }
 
                 acceptButton.performAction(AccessibilityNodeInfo.ACTION_CLICK)
 
+                performGestureClick(bounds)
+
+                performGestureSwipe(bounds)
+
+                true
+
+            } else if (appConfig.packageName == "com.ubercab.driver") {
+
+                Log.d(TAG, "[UBER] Auto-accepting Uber ride via Match button...")
+
+                if (AdbManager.isConnected) {
+                    Log.d(TAG, "[UBER] Executing ADB hardware tap at (${bounds.exactCenterX()}, ${bounds.exactCenterY()})...")
+                    AdbManager.tap(bounds.exactCenterX(), bounds.exactCenterY())
+                }
+
+                acceptButton.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+
+                performGestureClick(bounds)
+
+                true
+
+            } else if (appConfig.packageName == "com.rapido.rider") {
+
+                Log.d(TAG, "[RAPIDO] Auto-accepting Rapido ride (100ms ultra-fast accept)...")
+
+                // Capture bounds coordinates now (before node is recycled by Android)
+                // Then fire the actual click after a 100ms ultra-fast delay using Handler (non-blocking)
+                val clickX = bounds.exactCenterX()
+                val clickY = bounds.exactCenterY()
+                val delayMs = 100L
+
+                // Mark cooldown immediately so duplicate events in the delay window don't trigger another click
+                cooldowns[appConfig.packageName] = now
+
+                rapidoClickHandler.postDelayed({
+                    Log.d(TAG, "[RAPIDO] Ultra-fast click firing at (${clickX}, ${clickY}) after ${delayMs}ms")
+
+                    // 1. Accessibility Node ACTION_CLICK on the current window
+                    try {
+                        val activeRoot = rootInActiveWindow
+                        if (activeRoot != null) {
+                            val btn = findAcceptButton(activeRoot, appConfig.acceptButtonKeywords, null)
+                            btn?.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                            btn?.recycle()
+                            activeRoot.recycle()
+                        }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "[RAPIDO] Node click fallback error: ${e.message}")
+                    }
+
+                    // 2. Hardware ADB Tap if connected
+                    if (AdbManager.isConnected) {
+                        AdbManager.tap(clickX, clickY)
+                    }
+
+                    // 3. Real Touch Gesture Click (using enabled canPerformGestures)
+                    val delayedBounds = android.graphics.Rect(
+                        (clickX - 10).toInt(), (clickY - 10).toInt(),
+                        (clickX + 10).toInt(), (clickY + 10).toInt()
+                    )
+                    performGestureClick(delayedBounds)
+
+                    vibrateDevice()
+                    val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                    val total = prefs.getInt(KEY_TOTAL_ACCEPTED, 0) + 1
+                    prefs.edit().putInt(KEY_TOTAL_ACCEPTED, total).apply()
+                    val computedLocation = (if (dropText.isNotEmpty()) dropText else (matchedLocation ?: if (isSmartFareMode) "Smart Fare Match" else "")) + distStr
+                    saveRideHistory(appConfig.displayName, computedLocation, "ACCEPTED", pickupKm, dropKm, baseFare, tipAmt, pickupText, dropText)
+                    val earnedFare = (if (baseFare > 0f) baseFare.toDouble() else 0.0) + (if (tipAmt > 0f) tipAmt.toDouble() else 0.0)
+                    onRideAccepted?.invoke(appConfig.displayName, computedLocation, earnedFare)
+                    updateNotification("✅ [${appConfig.displayName}] Trip #$total Accepted → $computedLocation")
+                    updateHUD("✅ ACCEPTED!", "#FF00C853", true, lockDurationMs = 4000L)
+                    Log.d(TAG, "🎉 [RAPIDO] Accepted after ${delayMs}ms delay! Total: $total")
+                }, delayMs)
+
+                // Return true here so the main flow knows a click was scheduled
+                // (cooldown already set above to prevent duplicate triggers)
+                return true
+
+            } else if (appConfig.packageName == "com.zomato.delivery") {
+                Log.d(TAG, "[ZOMATO] Auto-swiping Zomato order via 'Swipe to accept' slider at bounds: $bounds")
+                if (AdbManager.isConnected) {
+                    val startX = bounds.left.toFloat() + (bounds.width() * 0.1f)
+                    val centerY = bounds.exactCenterY()
+                    val endX = bounds.right.toFloat() - (bounds.width() * 0.1f)
+                    AdbManager.swipe(startX, centerY, endX, centerY)
+                }
+                performGestureSwipe(bounds)
+                true
+            } else {
+                acceptButton.performAction(AccessibilityNodeInfo.ACTION_CLICK)
             }
 
         }
@@ -1331,9 +1520,9 @@ class RapidoAutoClickService : AccessibilityService() {
 
             vibrateDevice()
 
-            val finalLocation = (if (dropText.isNotEmpty()) dropText else (matchedLocation ?: if (isSmartFareMode) "Smart Fare Match" else "")) + distStr
+            val finalLocation = (if (effectiveDropText.isNotEmpty()) effectiveDropText else (matchedLocation ?: if (isSmartFareMode) "Smart Fare Match" else "")) + distStr
 
-            saveRideHistory(appConfig.displayName, finalLocation, "ACCEPTED", pickupKm, dropKm, baseFare, tipAmt, pickupText, dropText)
+            saveRideHistory(appConfig.displayName, finalLocation, "ACCEPTED", pickupKm, dropKm, baseFare, tipAmt, pickupText, effectiveDropText)
 
             val earnedFare = (if (baseFare > 0f) baseFare.toDouble() else 0.0) + (if (tipAmt > 0f) tipAmt.toDouble() else 0.0)
 
@@ -1349,6 +1538,342 @@ class RapidoAutoClickService : AccessibilityService() {
 
         return true
 
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Uber On-Device Screen Text Recognition (ML Kit OCR Fallback)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    private fun runUberOcrFallback(
+        acceptBounds: android.graphics.Rect,
+        targetLocations: List<String>,
+        prefs: android.content.SharedPreferences,
+        timestamp: Long
+    ) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            Log.d(TAG, "[UBER OCR] Android version < 30 (R), takeScreenshot not supported via AccessibilityService.")
+            updateHUD("⚠️ Uber OCR requires Android 11+", "#88FF9800", true, lockDurationMs = 3000L)
+            return
+        }
+
+        if (!isUberOcrRunning.compareAndSet(false, true)) {
+            Log.d(TAG, "[UBER OCR] OCR is already in progress, skipping duplicate call.")
+            return
+        }
+
+        val lastClick = cooldowns["com.ubercab.driver"] ?: 0L
+        if (System.currentTimeMillis() - lastClick < COOLDOWN_MS) {
+            Log.d(TAG, "[UBER OCR] In cooldown, ignoring OCR.")
+            isUberOcrRunning.set(false)
+            return
+        }
+
+        Log.d(TAG, "[UBER OCR] Taking silent screenshot for Uber text recognition...")
+
+        takeScreenshot(Display.DEFAULT_DISPLAY, ocrExecutor, object : TakeScreenshotCallback {
+            override fun onSuccess(screenshotResult: ScreenshotResult) {
+                try {
+                    val hardwareBuffer = screenshotResult.hardwareBuffer
+                    if (hardwareBuffer == null) {
+                        Log.e(TAG, "[UBER OCR] hardwareBuffer is null!")
+                        isUberOcrRunning.set(false)
+                        return
+                    }
+
+                    val colorSpace = screenshotResult.colorSpace ?: ColorSpace.get(ColorSpace.Named.SRGB)
+                    val bitmap = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        Bitmap.wrapHardwareBuffer(hardwareBuffer, colorSpace)
+                    } else null
+
+                    hardwareBuffer.close()
+
+                    if (bitmap == null) {
+                        Log.e(TAG, "[UBER OCR] Failed to wrap HardwareBuffer.")
+                        isUberOcrRunning.set(false)
+                        return
+                    }
+
+                    val softBitmap = try {
+                        val sb = Bitmap.createBitmap(bitmap.width, bitmap.height, Bitmap.Config.ARGB_8888)
+                        val canvas = android.graphics.Canvas(sb)
+                        canvas.drawBitmap(bitmap, 0f, 0f, null)
+                        sb
+                    } catch (e: Throwable) {
+                        bitmap.copy(Bitmap.Config.ARGB_8888, false)
+                    } finally {
+                        bitmap.recycle()
+                    }
+
+                    if (softBitmap == null) {
+                        Log.e(TAG, "[UBER OCR] Failed to convert HardwareBuffer to software Bitmap.")
+                        isUberOcrRunning.set(false)
+                        return
+                    }
+
+                    // Dynamically crop to the Uber Ride Card area at the bottom based on the Match button bounds
+                    val croppedCardBitmap = try {
+                        if (acceptBounds.width() > 50 && acceptBounds.height() > 20 && acceptBounds.top > 100) {
+                            val cardLeft = (acceptBounds.left - 30).coerceIn(0, softBitmap.width - 1)
+                            val cardRight = (acceptBounds.right + 30).coerceIn(cardLeft + 1, softBitmap.width)
+                            val cardBottom = (acceptBounds.bottom + 30).coerceIn(0, softBitmap.height)
+                            val estimatedCardHeight = (acceptBounds.width() * 1.35f).toInt()
+                            val cardTop = (acceptBounds.bottom - estimatedCardHeight).coerceIn((softBitmap.height * 0.30f).toInt(), (acceptBounds.top - 100).coerceAtLeast(0))
+                            val cardWidth = cardRight - cardLeft
+                            val cardHeight = cardBottom - cardTop
+                            Log.d(TAG, "[UBER OCR] Cropping to Ride Card: ($cardLeft, $cardTop, $cardRight, $cardBottom) [${cardWidth}x${cardHeight}]")
+                            Bitmap.createBitmap(softBitmap, cardLeft, cardTop, cardWidth, cardHeight)
+                        } else {
+                            val cardTop = (softBitmap.height * 0.40f).toInt()
+                            val cardHeight = softBitmap.height - cardTop
+                            Log.d(TAG, "[UBER OCR] Fallback crop to bottom 60%: (0, $cardTop, ${softBitmap.width}, ${softBitmap.height})")
+                            Bitmap.createBitmap(softBitmap, 0, cardTop, softBitmap.width, cardHeight)
+                        }
+                    } catch (e: Throwable) {
+                        Log.w(TAG, "[UBER OCR] Card crop failed (${e.message}), using full screen bitmap.")
+                        softBitmap
+                    }
+
+                    val image = InputImage.fromBitmap(croppedCardBitmap, 0)
+                    textRecognizer.process(image)
+                        .addOnSuccessListener(ocrExecutor) { visionText ->
+                            try {
+                                if (croppedCardBitmap != softBitmap) {
+                                    croppedCardBitmap.recycle()
+                                }
+                                softBitmap.recycle()
+                            } catch (e: Exception) {}
+                            isUberOcrRunning.set(false)
+                            parseAndExecuteUberOcr(visionText, acceptBounds, targetLocations, prefs, timestamp)
+                        }
+                        .addOnFailureListener(ocrExecutor) { e ->
+                            try {
+                                if (croppedCardBitmap != softBitmap) {
+                                    croppedCardBitmap.recycle()
+                                }
+                                softBitmap.recycle()
+                            } catch (e: Exception) {}
+                            isUberOcrRunning.set(false)
+                            Log.e(TAG, "[UBER OCR] Text recognition failed: ${e.message}", e)
+                        }
+                } catch (e: Throwable) {
+                    isUberOcrRunning.set(false)
+                    Log.e(TAG, "[UBER OCR] Error processing screenshot: ${e.message}", e)
+                }
+            }
+
+            override fun onFailure(errorCode: Int) {
+                isUberOcrRunning.set(false)
+                Log.e(TAG, "[UBER OCR] takeScreenshot failed with error code: $errorCode")
+            }
+        })
+    }
+
+    private fun parseAndExecuteUberOcr(
+        visionText: com.google.mlkit.vision.text.Text,
+        acceptBounds: android.graphics.Rect,
+        targetLocations: List<String>,
+        prefs: android.content.SharedPreferences,
+        timestamp: Long
+    ) {
+        val sortedLines = visionText.textBlocks
+            .flatMap { it.lines }
+            .sortedBy { it.boundingBox?.top ?: 0 }
+            .map { it.text.trim() }
+            .filter { it.isNotEmpty() }
+
+        val rawText = sortedLines.joinToString("\n")
+        Log.d(TAG, "[UBER OCR] Cropped Card Sorted OCR Lines (${sortedLines.size}):\n$rawText")
+
+        fun isNoiseLine(t: String): Boolean {
+            val lower = t.lowercase()
+            if (lower.length <= 1) return true
+            if (lower.matches(Regex("""^\d+$"""))) return true
+            val blacklist = listOf(
+                "accessibility", "profile active", "dist out of", "fare out of", "auto clicker",
+                "cash payment", "payment", "smart fare", "match", "airport", "alrport",
+                "hospital", "cantonment", "pallavare"
+            )
+            if (blacklist.any { lower.contains(it) }) return true
+            if (lower == "auto" || lower == "uber" || lower == "trip radar") return true
+            return false
+        }
+
+        // 1. Distance Extraction (Locate Pickup KM and Drop KM anchors)
+        val kmRegex = Regex("""([0-9]+(?:\.[0-9]+)?)\s*(?:km[a-z]?|m)\b""", RegexOption.IGNORE_CASE)
+        var pickupDistIdx = -1
+        var dropDistIdx = -1
+        var pickupKm = -1f
+        var dropKm = -1f
+
+        for ((index, line) in sortedLines.withIndex()) {
+            val cleaned = line.replace(Regex("""(\d+)\.,(\d+)"""), "$1.$2").replace(Regex("""(\d+),(\d+)"""), "$1.$2")
+            val match = kmRegex.find(cleaned)
+            if (match != null) {
+                val num = match.groupValues[1].toFloatOrNull() ?: continue
+                val unit = match.value.lowercase()
+                val dist = if (unit.endsWith("m") && !unit.contains("km")) num / 1000f else num
+                if (pickupDistIdx == -1) {
+                    pickupDistIdx = index
+                    pickupKm = dist
+                } else if (dropDistIdx == -1) {
+                    dropDistIdx = index
+                    dropKm = dist
+                    break
+                }
+            }
+        }
+
+        // 2. Fare Extraction
+        val standardFareRegex = Regex("""(?:₹|rs\.?)\s*([0-9]+(?:\.[0-9]+)?)""", RegexOption.IGNORE_CASE)
+        var ocrFare = standardFareRegex.find(rawText)?.groupValues?.get(1)?.toFloatOrNull() ?: -1f
+
+        if (ocrFare <= 0f) {
+            val paymentIdx = sortedLines.indexOfFirst {
+                it.contains("payment", ignoreCase = true) || it.contains("cash", ignoreCase = true)
+            }
+            if (paymentIdx > 0) {
+                val candidate = sortedLines[paymentIdx - 1].trim()
+                val numStr = candidate.replace(Regex("""^[^\d]*"""), "")
+                val num = numStr.toFloatOrNull()
+                if (num != null && num > 0f) {
+                    if (candidate.startsWith("7") && num in 720f..799f && (dropKm in 0f..15f || rawText.contains("Auto", ignoreCase = true))) {
+                        ocrFare = (num - 700f).coerceAtLeast(30f)
+                    } else {
+                        ocrFare = num
+                    }
+                }
+            }
+        }
+
+        if (ocrFare <= 0f) {
+            val fareLineRegex = Regex("""^[₹FfTt7]?\s*([1-9][0-9]{1,4}(?:\.[0-9]+)?)$""")
+            for (line in sortedLines) {
+                val m = fareLineRegex.find(line.trim())
+                if (m != null) {
+                    val valNum = m.groupValues[1].toFloatOrNull() ?: continue
+                    if (valNum in 30f..3000f) {
+                        if (line.startsWith("7") && valNum in 720f..799f && (dropKm in 0f..15f || rawText.contains("Auto", ignoreCase = true))) {
+                            ocrFare = valNum - 700f
+                        } else {
+                            ocrFare = valNum
+                        }
+                        break
+                    }
+                }
+            }
+        }
+
+        // 3. Extract Pickup & Drop Addresses
+        val pickupLines = mutableListOf<String>()
+        if (pickupDistIdx != -1 && dropDistIdx != -1 && dropDistIdx > pickupDistIdx) {
+            for (i in (pickupDistIdx + 1) until dropDistIdx) {
+                val l = sortedLines[i]
+                if (!isNoiseLine(l) && !l.startsWith("Includes", ignoreCase = true)) {
+                    pickupLines.add(l)
+                }
+            }
+        }
+        val extractedPickup = pickupLines.joinToString(", ").replace(Regex(""",\s*,"""), ",").trim()
+
+        val dropLines = mutableListOf<String>()
+        if (dropDistIdx != -1) {
+            for (i in (dropDistIdx + 1) until sortedLines.size) {
+                val l = sortedLines[i]
+                if (l.equals("Match", ignoreCase = true)) break
+                if (!isNoiseLine(l)) {
+                    dropLines.add(l)
+                }
+            }
+        }
+        val extractedDrop = dropLines.joinToString(", ").replace(Regex(""",\s*,"""), ",").trim()
+
+        // 4. Location Matching & Display
+        val isSmartFareMode = prefs.getBoolean("uber_smartFareMode", false)
+        var matchedLocation: String? = null
+        var isLocationMatch = false
+        val displayLocation = if (extractedDrop.isNotEmpty()) extractedDrop else (if (extractedPickup.isNotEmpty()) extractedPickup else "Uber Ride")
+
+        if (isSmartFareMode) {
+            if (ocrFare > 0f) {
+                isLocationMatch = true
+                matchedLocation = displayLocation
+            }
+        } else {
+            matchedLocation = targetLocations.firstOrNull { loc ->
+                loc.isNotBlank() && (extractedDrop.contains(loc.trim(), ignoreCase = true) || rawText.contains(loc.trim(), ignoreCase = true))
+            }
+            if (matchedLocation != null) {
+                isLocationMatch = true
+            }
+        }
+
+        // 5. Distance & Price Range Checks (reads Global Filters, falls back to uber settings)
+        val pickupMin = prefs.getFloat("global_pickup_min", prefs.getFloat("pickup_min_uber", 0.0f))
+        val pickupMax = prefs.getFloat("global_pickup_max", prefs.getFloat("pickup_max_uber", 5.0f))
+        val dropMin = prefs.getFloat("global_drop_min", prefs.getFloat("drop_min_uber", 0.0f))
+        val dropMax = prefs.getFloat("global_drop_max", prefs.getFloat("drop_max_uber", 50.0f))
+        val priceMin = prefs.getFloat("global_price_min", prefs.getFloat("price_min_uber", 0.0f))
+        val priceMax = prefs.getFloat("global_price_max", prefs.getFloat("price_max_uber", 1500.0f))
+
+        val isPickupInRange = pickupKm == -1f || (pickupKm in pickupMin..pickupMax)
+        val isDropInRange = dropKm == -1f || (dropKm in dropMin..dropMax)
+        val isPriceInRange = if (isSmartFareMode) {
+            ocrFare > 0f && (ocrFare in priceMin..priceMax)
+        } else {
+            ocrFare == -1f || (ocrFare in priceMin..priceMax)
+        }
+
+        val isMatch = isLocationMatch && isPickupInRange && isDropInRange && isPriceInRange
+
+        Log.d(TAG, "[UBER OCR] Global Filters -> Ride(P: ${pickupKm}km, D: ${dropKm}km, Fare: ₹$ocrFare) vs Limits(P: $pickupMin..$pickupMax, D: $dropMin..$dropMax, Price: ₹$priceMin..₹$priceMax) => pickupInRange=$isPickupInRange, dropInRange=$isDropInRange, priceInRange=$isPriceInRange, isMatch=$isMatch")
+
+        val pStr = if (pickupKm >= 0) "${pickupKm}km" else "?"
+        val dStr = if (dropKm >= 0) "${dropKm}km" else "?"
+        val prStr = if (ocrFare >= 0) "₹${ocrFare.toInt()}" else "?"
+        val distStr = " (P: $pStr, D: $dStr, $prStr)"
+        val finalLocation = displayLocation + distStr
+
+        Handler(Looper.getMainLooper()).post {
+            if (isMatch) {
+                Log.d(TAG, "[UBER OCR] MATCH FOUND! Location: '$displayLocation', Fare: $ocrFare, KM: $dropKm")
+                cooldowns["com.ubercab.driver"] = System.currentTimeMillis()
+
+                updateHUD("🎯 Uber Match: $displayLocation", "#882979FF", true, lockDurationMs = 2500L)
+                vibrateDevice()
+
+                val total = prefs.getInt(KEY_TOTAL_ACCEPTED, 0) + 1
+                prefs.edit().putInt(KEY_TOTAL_ACCEPTED, total).apply()
+
+                saveRideHistory("Uber", finalLocation, "ACCEPTED", pickupKm, dropKm, ocrFare, -1f, extractedPickup, extractedDrop)
+
+                val earnedFare = if (ocrFare > 0f) ocrFare.toDouble() else 0.0
+                onRideAccepted?.invoke("Uber", finalLocation, earnedFare)
+                updateNotification("✅ [Uber] Trip #$total Accepted → $finalLocation")
+
+                // Click Match button
+                if (AdbManager.isConnected) {
+                    Log.d(TAG, "[UBER OCR] Executing ADB hardware tap at (${acceptBounds.exactCenterX()}, ${acceptBounds.exactCenterY()})")
+                    AdbManager.tap(acceptBounds.exactCenterX(), acceptBounds.exactCenterY())
+                }
+                performGestureClick(acceptBounds)
+            } else {
+                Log.d(TAG, "[UBER OCR] Ride Skipped / No Match. isLocationMatch=$isLocationMatch pickupInRange=$isPickupInRange dropInRange=$isDropInRange priceInRange=$isPriceInRange fare=$ocrFare dropKm=$dropKm")
+
+                val hudMsg = if (isSmartFareMode && ocrFare > 0f && !isPriceInRange) {
+                    "❌ Fare: ₹${ocrFare.toInt()} (Range: ₹${priceMin.toInt()}-₹${priceMax.toInt()})"
+                } else if (!isPickupInRange || !isDropInRange) {
+                    "❌ Dist Out of Range: P:$pStr D:$dStr"
+                } else if (!isLocationMatch) {
+                    "❌ Location Mismatch: $displayLocation"
+                } else {
+                    "❌ Uber Skip"
+                }
+
+                updateHUD(hudMsg, "#88D32F2F", true, lockDurationMs = 3500L)
+                // Always save to ride history so driver sees all detected/skipped rides in Ride History page!
+                saveRideHistory("Uber", finalLocation, "SKIPPED", pickupKm, dropKm, ocrFare, -1f, extractedPickup, extractedDrop)
+            }
+        }
     }
 
 
@@ -1426,6 +1951,20 @@ class RapidoAutoClickService : AccessibilityService() {
         }
 
 
+
+        val rideEventMap = mapOf<String, Any>(
+            "timestamp" to now,
+            "appName" to appName,
+            "location" to location,
+            "status" to status,
+            "pickupKm" to pickupKm.toDouble(),
+            "dropKm" to dropKm.toDouble(),
+            "fare" to fare.toDouble(),
+            "tip" to tip.toDouble(),
+            "pickupLocation" to pickupLocation,
+            "dropLocation" to dropLocation
+        )
+        onRideEvent?.invoke(rideEventMap)
 
         val historyStr = prefs.getString("ride_history", "[]") ?: "[]"
 
@@ -1523,9 +2062,9 @@ class RapidoAutoClickService : AccessibilityService() {
 
             "com.ubercab.driver" -> extractGenericAddresses(root, cropRect)
 
-            // OLA — red dot location (second location with red bullet)
+            // OLA — dedicated pickup / drop label extraction
 
-            "com.olacabs.oladriver" -> extractGenericAddresses(root, cropRect)
+            "com.olacabs.oladriver" -> extractOlaLocations(root, cropRect)
 
             // Rapido — second address block
 
@@ -1533,6 +2072,73 @@ class RapidoAutoClickService : AccessibilityService() {
 
         }
 
+    }
+
+
+
+    /**
+     * Dedicated OLA Location Parser:
+     * OLA shows "pick up [dist] · [mins]" above the pickup address,
+     * and "drop [dist] · [mins]" above the drop address.
+     */
+    private fun extractOlaLocations(root: AccessibilityNodeInfo, cropRect: android.graphics.Rect?): Pair<String, String> {
+        val allTexts = mutableListOf<String>()
+        collectTextList(root, allTexts, cropRect)
+
+        var pickupLoc = ""
+        var dropLoc = ""
+
+        for (i in allTexts.indices) {
+            val text = allTexts[i]
+
+            // 1. Pickup address follows "pick up"
+            if (pickupLoc.isEmpty() && (text.contains("pick up", ignoreCase = true) || text.contains("pickup", ignoreCase = true))) {
+                for (j in i + 1 until allTexts.size) {
+                    val candidate = allTexts[j].trim()
+                    if (isValidAddressCandidate(candidate)) {
+                        pickupLoc = candidate
+                        break
+                    }
+                }
+            }
+
+            // 2. Drop address follows "drop"
+            if (dropLoc.isEmpty() && (text.contains("drop", ignoreCase = true) || text.contains("destination", ignoreCase = true))) {
+                for (j in i + 1 until allTexts.size) {
+                    val candidate = allTexts[j].trim()
+                    if (isValidAddressCandidate(candidate)) {
+                        dropLoc = candidate
+                        break
+                    }
+                }
+            }
+        }
+
+        // Fallback to cleaned generic addresses if needed
+        if (dropLoc.isEmpty() || pickupLoc.isEmpty()) {
+            val fallback = extractGenericAddresses(root, cropRect)
+            if (pickupLoc.isEmpty()) pickupLoc = fallback.first
+            if (dropLoc.isEmpty()) dropLoc = fallback.second
+        }
+
+        return Pair(pickupLoc, dropLoc)
+    }
+
+    private fun isValidAddressCandidate(text: String): Boolean {
+        if (text.length < 3) return false
+        if (text.startsWith("₹") || text.startsWith("$")) return false
+        if (text.matches(Regex(".*\\d+\\s*(km|mins|min).*", RegexOption.IGNORE_CASE))) return false
+        if (text.matches(Regex("\\d+s", RegexOption.IGNORE_CASE))) return false
+
+        val ignoreList = listOf(
+            "todo", "old to new", "new to old", "1 ride", "accept", "accept in",
+            "auto", "cash", "category icon", "icon", "category", "pickup", "pick up", "drop",
+            "fare", "rating", "payment", "trip radar", "match"
+        )
+        if (ignoreList.any { text.equals(it, ignoreCase = true) || (text.length <= 15 && text.contains(it, ignoreCase = true)) }) {
+            return false
+        }
+        return true
     }
 
 
@@ -1635,7 +2241,7 @@ class RapidoAutoClickService : AccessibilityService() {
 
     private fun collectAddressTexts(node: AccessibilityNodeInfo, result: MutableList<String>, cropRect: android.graphics.Rect?) {
 
-        val text = node.text?.toString()?.trim() ?: ""
+        val text = (node.text?.toString()?.trim() ?: node.contentDescription?.toString()?.trim()) ?: ""
 
 
 
@@ -1649,7 +2255,10 @@ class RapidoAutoClickService : AccessibilityService() {
 
             "home", "dashboard", "booked", "compact", "traffic", "fare",
 
-            "1 ride", "1 order", "old to new", "km away", "distance",
+            "1 ride", "1 order", "old to new", "new to old", "km away", "distance",
+
+            // Placeholder / UI icons
+            "todo", "category icon", "icon", "category", "button", "image",
 
             // Rapido UI elements
 
@@ -1669,15 +2278,12 @@ class RapidoAutoClickService : AccessibilityService() {
 
         )
 
-        val isAddress = text.length > 8 &&
-
+        val isAddress = text.length >= 3 &&
                 !text.startsWith("₹") && !text.startsWith("$") &&
-
+                !text.contains("todo", ignoreCase = true) &&
                 !text.matches(Regex(".*\\d+\\s*(km|mins|min).*", RegexOption.IGNORE_CASE)) &&
-
                 !text.matches(Regex("\\d+s")) && // "7s" countdown
-
-                !skipKeywords.any { text.contains(it, ignoreCase = true) }
+                !skipKeywords.any { text.equals(it, ignoreCase = true) || (text.length <= 18 && text.contains(it, ignoreCase = true)) }
 
 
 
@@ -1853,19 +2459,63 @@ class RapidoAutoClickService : AccessibilityService() {
 
 
 
+    private fun executeAdbTap(x: Float, y: Float) {
+        Thread {
+            try {
+                val process = Runtime.getRuntime().exec(arrayOf("sh", "-c", "input tap ${x.toInt()} ${y.toInt()}"))
+                process.waitFor()
+                Log.d(TAG, "ADB tap executed: input tap ${x.toInt()} ${y.toInt()}")
+            } catch (e: Exception) {
+                Log.d(TAG, "Direct local shell tap fallback: ${e.message}")
+            }
+        }.start()
+    }
+
+    private fun executeAdbSwipe(startX: Float, startY: Float, endX: Float, endY: Float) {
+        Thread {
+            try {
+                val process = Runtime.getRuntime().exec(arrayOf("sh", "-c", "input swipe ${startX.toInt()} ${startY.toInt()} ${endX.toInt()} ${endY.toInt()} 300"))
+                process.waitFor()
+                Log.d(TAG, "ADB swipe executed: input swipe $startX $startY $endX $endY 300")
+            } catch (e: Exception) {
+                Log.d(TAG, "Direct local shell swipe fallback: ${e.message}")
+            }
+        }.start()
+    }
+
     private fun performGestureClick(bounds: android.graphics.Rect) {
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
 
+            // Add slight random coordinate jitter (+/- 4px) to simulate natural human finger touch
+            val jitterX = (-4..4).random().toFloat()
+            val jitterY = (-4..4).random().toFloat()
+            val x = bounds.exactCenterX() + jitterX
+            val y = bounds.exactCenterY() + jitterY
+
+            executeAdbTap(x, y)
+
             val path = android.graphics.Path()
 
-            path.moveTo(bounds.exactCenterX(), bounds.exactCenterY())
+            path.moveTo(x, y)
+
+            path.lineTo(x + 1f, y + 1f) // Required for Android to generate MotionEvent ACTION_DOWN & ACTION_UP!
 
             val gestureBuilder = android.accessibilityservice.GestureDescription.Builder()
 
-            gestureBuilder.addStroke(android.accessibilityservice.GestureDescription.StrokeDescription(path, 0, 50))
+            // 40ms duration for crisp and snappy touch event
+            gestureBuilder.addStroke(android.accessibilityservice.GestureDescription.StrokeDescription(path, 0, 40))
 
-            dispatchGesture(gestureBuilder.build(), null, null)
+            val callback = object : GestureResultCallback() {
+                override fun onCompleted(gestureDescription: android.accessibilityservice.GestureDescription?) {
+                    Log.d(TAG, "Gesture click completed at ($x, $y)")
+                }
+                override fun onCancelled(gestureDescription: android.accessibilityservice.GestureDescription?) {
+                    Log.w(TAG, "Gesture click cancelled by system at ($x, $y)")
+                }
+            }
+
+            dispatchGesture(gestureBuilder.build(), callback, null)
 
         }
 
@@ -1877,15 +2527,15 @@ class RapidoAutoClickService : AccessibilityService() {
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
 
-            val path = android.graphics.Path()
-
             val startX = bounds.left.toFloat() + (bounds.width() * 0.1f)
 
             val centerY = bounds.exactCenterY()
 
             val endX = bounds.right.toFloat() - (bounds.width() * 0.1f)
 
-            
+            executeAdbSwipe(startX, centerY, endX, centerY)
+
+            val path = android.graphics.Path()
 
             path.moveTo(startX, centerY)
 
@@ -1905,139 +2555,7 @@ class RapidoAutoClickService : AccessibilityService() {
 
 
 
-    private var blockerOverlay: android.view.View? = null
-
-
-
-    private fun updateBlocker(bounds: android.graphics.Rect?, show: Boolean) {
-
-        val wm = getSystemService(Context.WINDOW_SERVICE) as? android.view.WindowManager ?: return
-
-        
-
-        if (bounds == null) {
-
-            blockerOverlay?.let { 
-
-                try { wm.removeView(it) } catch (e: Exception) {}
-
-                blockerOverlay = null
-
-            }
-
-            return
-
-        }
-
-
-
-        // Add HUGE padding to ensure it covers the entire bottom area even before rendering
-
-        val pad = 200
-
-        val targetX = bounds.left - pad
-
-        val targetY = bounds.top - pad
-
-        val targetW = bounds.width() + (pad * 2)
-
-        val targetH = bounds.height() + (pad * 2)
-
-
-
-        val flagsActive = android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-
-                android.view.WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
-
-                android.view.WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
-
-                
-
-        val flagsHidden = flagsActive or android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-
-
-
-        val currentFlags = if (show) flagsActive else flagsHidden
-
-        val currentColor = if (show) android.graphics.Color.parseColor("#44FF0000") else android.graphics.Color.TRANSPARENT
-
-
-
-        if (blockerOverlay != null) {
-
-            val params = blockerOverlay?.layoutParams as? android.view.WindowManager.LayoutParams
-
-            if (params != null) {
-
-                params.x = targetX
-
-                params.y = targetY
-
-                params.width = targetW
-
-                params.height = targetH
-
-                params.flags = currentFlags
-
-                blockerOverlay?.setBackgroundColor(currentColor)
-
-                try { wm.updateViewLayout(blockerOverlay, params) } catch (e: Exception) {}
-
-            }
-
-            return
-
-        }
-
-
-
-        if (!show) return // Don't create initially if false
-
-
-
-        val params = android.view.WindowManager.LayoutParams(
-
-            targetW,
-
-            targetH,
-
-            android.view.WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-
-            currentFlags,
-
-            android.graphics.PixelFormat.TRANSLUCENT
-
-        )
-
-        params.gravity = android.view.Gravity.TOP or android.view.Gravity.START
-
-        params.x = targetX
-
-        params.y = targetY
-
-
-
-        val view = android.widget.FrameLayout(this)
-
-        view.setBackgroundColor(currentColor) 
-
-        view.setOnTouchListener { _, _ -> true }
-
-
-
-        try {
-
-            wm.addView(view, params)
-
-            blockerOverlay = view
-
-        } catch (e: Exception) {
-
-            e.printStackTrace()
-
-        }
-
-    }
+    
 
 
 
@@ -2412,21 +2930,17 @@ class RapidoAutoClickService : AccessibilityService() {
 
 
     private fun createNotificationChannel() {
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-
-            val ch = NotificationChannel(
-
-                CHANNEL_ID, "Auto Clicker", NotificationManager.IMPORTANCE_LOW
-
-            ).apply { setShowBadge(false) }
-
-            (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
-
-                .createNotificationChannel(ch)
-
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val ch = NotificationChannel(
+                    CHANNEL_ID, "Way 2 Right path", NotificationManager.IMPORTANCE_LOW
+                ).apply { setShowBadge(false) }
+                (getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager)
+                    ?.createNotificationChannel(ch)
+            }
+        } catch (t: Throwable) {
+            Log.w(TAG, "createNotificationChannel notice: ${t.message}")
         }
-
     }
 
 
@@ -2463,7 +2977,7 @@ class RapidoAutoClickService : AccessibilityService() {
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
 
-            .setContentTitle("🚖 Auto Clicker Active")
+            .setContentTitle("🚖 Way 2 Right path Active")
 
             .setContentText(text)
 
@@ -2536,11 +3050,12 @@ class RapidoAutoClickService : AccessibilityService() {
 
 
     fun updateNotification(text: String) {
-
-        (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
-
-            .notify(NOTIFICATION_ID, buildNotification(text))
-
+        try {
+            (getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager)
+                ?.notify(NOTIFICATION_ID, buildNotification(text))
+        } catch (t: Throwable) {
+            Log.w(TAG, "Notification post failed: ${t.message}")
+        }
     }
 
 }

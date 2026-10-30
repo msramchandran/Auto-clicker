@@ -54,12 +54,16 @@ class LocationProfilesPage extends StatefulWidget {
   final List<LocationProfile> profiles;
   final bool isTamil;
   final bool isDarkMode;
+  final bool isSmartFareActive;
+  final List<String> smartFareApps;
 
   const LocationProfilesPage({
     super.key,
     required this.profiles,
     this.isTamil = false,
     this.isDarkMode = true,
+    this.isSmartFareActive = false,
+    this.smartFareApps = const [],
   });
 
   @override
@@ -81,7 +85,56 @@ class _LocationProfilesPageState extends State<LocationProfilesPage> {
 
   String _t(String en, String ta) => widget.isTamil ? ta : en;
 
+  void _showSmartFareConflictDialog() {
+    final appsStr = widget.smartFareApps.isNotEmpty ? widget.smartFareApps.join(', ') : 'Apps';
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: widget.isDarkMode ? const Color(0xFF1E1E1E) : Colors.white,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Row(
+          children: const [
+            Icon(Icons.warning_amber_rounded, color: Colors.orangeAccent, size: 26),
+            SizedBox(width: 8),
+            Text('Mode Conflict!', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+          ],
+        ),
+        content: Text(
+          widget.isTamil
+              ? 'Smart Fare Mode மற்றும் Location Profile இரண்டும் ஒரே நேரத்தில் ON பண்ண முடியாது.\n\n'
+                'தற்போது $appsStr-ல் Smart Fare Mode ON-ல் உள்ளது.\n\n'
+                'முதலில் Apps கார்டில் உள்ள Smart Fare Mode-ஐ OFF செய்யவும், பிறகு Location Profile-ஐ ON பண்ணலாம்.'
+              : 'Smart Fare Mode and Location Profile cannot be ON at the same time.\n\n'
+                'Smart Fare Mode is currently active in $appsStr.\n\n'
+                'Please turn OFF Smart Fare Mode first in the app cards, then enable Location Profile.',
+          style: TextStyle(
+            color: widget.isDarkMode ? Colors.white70 : const Color(0xFF374151),
+            height: 1.5,
+            fontSize: 13,
+          ),
+        ),
+        actions: [
+          SizedBox(
+            width: double.infinity,
+            child: TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: Text(
+                widget.isTamil ? 'சரி (OK)' : 'Got it',
+                style: const TextStyle(color: Color(0xFFFFCC00), fontWeight: FontWeight.bold, fontSize: 15),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _saveAndApply() async {
+    final hasActive = _profiles.any((p) => p.isActive);
+    if (hasActive && widget.isSmartFareActive) {
+      _showSmartFareConflictDialog();
+      return;
+    }
     setState(() => _isSaving = true);
 
     final jsonStr = jsonEncode(_profiles.map((p) => p.toJson()).toList());
@@ -1070,6 +1123,10 @@ class _LocationProfilesPageState extends State<LocationProfilesPage> {
                   inactiveThumbColor: const Color(0xFF888888),
                   inactiveTrackColor: isDark ? const Color(0xFF2A2A2A) : const Color(0xFFD1D5DB),
                   onChanged: (val) {
+                    if (val && widget.isSmartFareActive) {
+                      _showSmartFareConflictDialog();
+                      return;
+                    }
                     setState(() {
                       profile.isActive = val;
                       _hasUnsavedChanges = true;

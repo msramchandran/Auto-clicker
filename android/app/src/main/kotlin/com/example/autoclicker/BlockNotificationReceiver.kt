@@ -13,12 +13,12 @@ class BlockNotificationReceiver : BroadcastReceiver() {
 
     companion object {
         const val CHANNEL_ID = "autoclicker_alerts_channel"
-        const val CHANNEL_NAME = "AutoClicker Alerts"
+        const val CHANNEL_NAME = "Way 2 Right path Alerts"
         const val NOTIFICATION_ID = 1005
     }
 
     override fun onReceive(context: Context, intent: Intent) {
-        val title = intent.getStringExtra("title") ?: "Auto Clicker"
+        val title = intent.getStringExtra("title") ?: "Way 2 Right path"
         val message = intent.getStringExtra("message") ?: "Your 12-hour block has ended! You can now use the app."
         val notifId = intent.getIntExtra("id", NOTIFICATION_ID)
 
